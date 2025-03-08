@@ -1,10 +1,6 @@
 /***************************************************************************//**
  *  \file       driver.c
- *
  *  \details    Linux device driver (IOCTL) with DMA support on Raspberry Pi 3.
- *
- *  \author     EmbeTronicX
- *
  *******************************************************************************/
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -31,7 +27,6 @@ struct etx_device {
     struct cdev cdev;
     struct device *device;
     dev_t dev;
-
     int32_t value;
 
     // DMA-related members
@@ -42,23 +37,21 @@ struct etx_device {
     struct dma_chan *chan;
     struct dma_async_tx_descriptor *desc;
     dma_cookie_t cookie;
+    bool dma_initialized;
 };
 
-// Define one device instance (can be expanded for multiple devices)
+// Define one device instance
 static struct etx_device etx_dev;
 static struct class *etx_class;
 
 // Function Prototypes
 static int etx_open(struct inode *inode, struct file *file);
 static int etx_release(struct inode *inode, struct file *file);
-static ssize_t etx_read(struct file *filp, char __user *buf, size_t len, loff_t *off);
-static ssize_t etx_write(struct file *filp, const char __user *buf, size_t len, loff_t *off);
 static long etx_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 
+// File operations
 static struct file_operations fops = {
     .owner          = THIS_MODULE,
-    .read           = etx_read,
-    .write          = etx_write,
     .open           = etx_open,
     .unlocked_ioctl = etx_ioctl,
     .release        = etx_release,
@@ -77,6 +70,11 @@ static int my_dma_init(struct etx_device *dev)
     dma_cap_mask_t mask;
     struct completion cmp;
     int ret;
+
+    if (dev->dma_initialized) {
+        pr_info("DMA already initialized\n");
+        return 0;
+    }
 
     pr_info("Requesting DMA channel...\n");
 
@@ -106,7 +104,7 @@ static int my_dma_init(struct etx_device *dev)
     memset(dev->src_buf, 0x12, DMA_BUFFER_SIZE);
     memset(dev->dst_buf, 0x0, DMA_BUFFER_SIZE);
 
-    dev->desc = dmaengine_prep_dma_memcpy(dev->chan, dev->dst_addr, dev->src_addr, DMA_BUFFER_SIZE, 0);
+    dev->desc = dmaengine_prep_dma_memcpy(dev->chan, dev->dst_addr, dev->src_addr, DMA_BUFFER_SIZE, DMA_CTRL_ACK);
     if (!dev->desc) {
         pr_err("Failed to prepare DMA memcpy\n");
         ret = -EINVAL;
@@ -127,6 +125,7 @@ static int my_dma_init(struct etx_device *dev)
     }
 
     pr_info("DMA Transfer Completed Successfully\n");
+    dev->dma_initialized = true;
     return 0;
 
 free_dst_buf:
@@ -141,10 +140,14 @@ free_chan:
 // DMA Cleanup
 static void my_dma_exit(struct etx_device *dev)
 {
-    if (dev->chan) {
-        dma_free_coherent(dev->device, DMA_BUFFER_SIZE, dev->dst_buf, dev->dst_addr);
-        dma_free_coherent(dev->device, DMA_BUFFER_SIZE, dev->src_buf, dev->src_addr);
-        dma_release_channel(dev->chan);
+    if (dev->dma_initialized) {
+        pr_info("Releasing DMA resources...\n");
+        if (dev->chan) {
+            dma_free_coherent(dev->device, DMA_BUFFER_SIZE, dev->dst_buf, dev->dst_addr);
+            dma_free_coherent(dev->device, DMA_BUFFER_SIZE, dev->src_buf, dev->src_addr);
+            dma_release_channel(dev->chan);
+        }
+        dev->dma_initialized = false;
     }
 }
 
@@ -162,20 +165,6 @@ static int etx_release(struct inode *inode, struct file *file)
 {
     pr_info("Device Closed\n");
     return 0;
-}
-
-// Read
-static ssize_t etx_read(struct file *filp, char __user *buf, size_t len, loff_t *off)
-{
-    pr_info("Read Function\n");
-    return 0;
-}
-
-// Write
-static ssize_t etx_write(struct file *filp, const char __user *buf, size_t len, loff_t *off)
-{
-    pr_info("Write Function\n");
-    return len;
 }
 
 // IOCTL
@@ -197,13 +186,39 @@ static long etx_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 // Module Init
 static int __init etx_driver_init(void)
 {
-    alloc_chrdev_region(&etx_dev.dev, 0, 1, "etx_Dev");
+    int ret;
+
+    ret = alloc_chrdev_region(&etx_dev.dev, 0, 1, "etx_Dev");
+    if (ret) {
+        pr_err("Failed to allocate char dev region\n");
+        return ret;
+    }
+
     cdev_init(&etx_dev.cdev, &fops);
-    cdev_add(&etx_dev.cdev, etx_dev.dev, 1);
+    if (cdev_add(&etx_dev.cdev, etx_dev.dev, 1)) {
+        pr_err("Failed to add cdev\n");
+        unregister_chrdev_region(etx_dev.dev, 1);
+        return -EINVAL;
+    }
 
-    etx_class = class_create("etx_class");
+    etx_class = class_create(THIS_MODULE, "etx_class");
+    if (IS_ERR(etx_class)) {
+        pr_err("Failed to create class\n");
+        cdev_del(&etx_dev.cdev);
+        unregister_chrdev_region(etx_dev.dev, 1);
+        return PTR_ERR(etx_class);
+    }
+
     etx_dev.device = device_create(etx_class, NULL, etx_dev.dev, NULL, "etx_device");
+    if (IS_ERR(etx_dev.device)) {
+        pr_err("Failed to create device\n");
+        class_destroy(etx_class);
+        cdev_del(&etx_dev.cdev);
+        unregister_chrdev_region(etx_dev.dev, 1);
+        return PTR_ERR(etx_dev.device);
+    }
 
+    etx_dev.dma_initialized = false;
     pr_info("Device Driver Inserted\n");
     return 0;
 }
@@ -211,6 +226,7 @@ static int __init etx_driver_init(void)
 // Module Exit
 static void __exit etx_driver_exit(void)
 {
+    my_dma_exit(&etx_dev);
     device_destroy(etx_class, etx_dev.dev);
     class_destroy(etx_class);
     cdev_del(&etx_dev.cdev);
@@ -222,7 +238,4 @@ module_init(etx_driver_init);
 module_exit(etx_driver_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("EmbeTronicX");
-MODULE_DESCRIPTION("Linux device driver with DMA support on Raspberry Pi 3");
-MODULE_VERSION("3.0");
 
