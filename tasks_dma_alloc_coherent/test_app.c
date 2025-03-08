@@ -3,61 +3,56 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <errno.h>
 #include <string.h>
 
 #define DEVICE_PATH "/dev/etx_device"
+
 #define MY_IOCTL_START_DMA _IO('k', 0)
 #define MY_IOCTL_STOP_DMA _IO('k', 1)
 
 int main() {
-    int fd, ret;
-    char write_buf[] = "Hello DMA!";
-    char read_buf[100] = {0};
-
+    int fd;
+    
+    // Open the device file
     fd = open(DEVICE_PATH, O_RDWR);
     if (fd < 0) {
-        perror("Cannot open device");
-        return errno;
+        perror("Failed to open device");
+        return EXIT_FAILURE;
     }
+    printf("Device opened successfully: %s\n", DEVICE_PATH);
 
-    // Write to the device
-    printf("Writing to device: %s\n", write_buf);
-    ret = write(fd, write_buf, strlen(write_buf));
-    if (ret < 0) {
-        perror("Write failed");
+    // Start DMA Transfer
+    printf("Starting DMA Transfer...\n");
+    if (ioctl(fd, MY_IOCTL_START_DMA) < 0) {
+        perror("IOCTL START_DMA failed");
         close(fd);
-        return errno;
+        return EXIT_FAILURE;
     }
+    printf("DMA Transfer Started Successfully!\n");
 
-    // Read from the device
-    ret = read(fd, read_buf, sizeof(read_buf));
-    if (ret < 0) {
+    // Read data from the device (not mandatory for DMA, but for verification)
+    char buffer[1024];
+    memset(buffer, 0, sizeof(buffer));
+
+    if (read(fd, buffer, sizeof(buffer)) < 0) {
         perror("Read failed");
+    } else {
+        printf("Read success: %s\n", buffer);
+    }
+
+    // Stop DMA Transfer
+    printf("Stopping DMA Transfer...\n");
+    if (ioctl(fd, MY_IOCTL_STOP_DMA) < 0) {
+        perror("IOCTL STOP_DMA failed");
         close(fd);
-        return errno;
+        return EXIT_FAILURE;
     }
-    printf("Read from device: %s\n", read_buf);
+    printf("DMA Transfer Stopped Successfully!\n");
 
-    // Start DMA
-    printf("Starting DMA transfer...\n");
-    ret = ioctl(fd, MY_IOCTL_START_DMA);
-    if (ret < 0) {
-        perror("IOCTL Start DMA failed");
-    } else {
-        printf("DMA transfer started successfully.\n");
-    }
-
-    // Stop DMA
-    printf("Stopping DMA transfer...\n");
-    ret = ioctl(fd, MY_IOCTL_STOP_DMA);
-    if (ret < 0) {
-        perror("IOCTL Stop DMA failed");
-    } else {
-        printf("DMA transfer stopped successfully.\n");
-    }
-
+    // Close the device
     close(fd);
-    return 0;
+    printf("Device closed successfully\n");
+
+    return EXIT_SUCCESS;
 }
 
