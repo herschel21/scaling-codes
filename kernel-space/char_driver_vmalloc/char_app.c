@@ -136,8 +136,6 @@ int main() {
 
     // Process multiple iterations
     for (int i = 0; i < MAX_ITERATIONS; i++) {
-        printf("Iteration %d\n", i);
-
         // Scale the image (process the data in user space)
         scaleImage(kernel_buffer, output_buffer, SRC_WIDTH, SRC_HEIGHT, DST_WIDTH, DST_HEIGHT);
     }
