@@ -31,14 +31,14 @@ typedef struct {
 void scaleImage(unsigned char* src, unsigned char* dst, 
                 int src_width, int src_height,
                 int dst_width, int dst_height) {
-    int x_ratio = src_width / dst_width;
-    int y_ratio = src_height / dst_height;
+    float x_ratio = (float)src_width / dst_width;
+    float y_ratio = (float)src_height / dst_height;
 
     #pragma omp parallel for collapse(2)
     for (int y = 0; y < dst_height; y++) {
         for (int x = 0; x < dst_width; x++) {
-            int srcX = (x * x_ratio);
-            int srcY = (y * y_ratio);
+            int srcX = (int)(x * x_ratio);
+            int srcY = (int)(y * y_ratio);
             int srcIndex = (srcY * src_width + srcX) * PIXEL_SIZE;
             int dstIndex = (y * dst_width + x) * PIXEL_SIZE;
 
@@ -136,6 +136,8 @@ int main() {
 
     // Process multiple iterations
     for (int i = 0; i < MAX_ITERATIONS; i++) {
+        printf("Iteration %d\n", i);
+
         // Scale the image (process the data in user space)
         scaleImage(kernel_buffer, output_buffer, SRC_WIDTH, SRC_HEIGHT, DST_WIDTH, DST_HEIGHT);
     }
@@ -157,5 +159,4 @@ cleanup:
     printf("Test application completed\n");
     return 0;
 }
-
 
