@@ -31,6 +31,7 @@ typedef struct {
 } Resolution;
 
 // Nearest-neighbor scaling function
+#if 0
 void scaleImage(Resolution* src, Resolution* dst) {
     float x_ratio = (float)src->width / dst->width;
     float y_ratio = (float)src->height / dst->height;
@@ -51,6 +52,26 @@ void scaleImage(Resolution* src, Resolution* dst) {
         }
     }
 }
+#endif
+
+#if 1
+void scaleImage(Resolution* src, Resolution* dst) {
+    int x_ratio = (src->width << 16) / dst->width;  // Using fixed-point scaling (Q16 format)
+    int y_ratio = (src->height << 16) / dst->height;
+
+    #pragma omp parallel for collapse(2)
+    for (int y = 0; y < dst->height; y++) {
+        for (int x = 0; x < dst->width; x++) {
+            int srcX = (x * x_ratio) >> 16;  // Convert back from fixed-point
+            int srcY = (y * y_ratio) >> 16;
+            int srcIndex = (srcY * src->width + srcX) * PIXEL_SIZE;
+            int dstIndex = (y * dst->width + x) * PIXEL_SIZE;
+
+            memcpy(&dst->data[dstIndex], &src->data[srcIndex], PIXEL_SIZE);
+        }
+    }
+}
+#endif
 
 // Function to write resolution data to memory
 void writeResolution(Resolution* res, unsigned char* destMemory) {
