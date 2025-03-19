@@ -1,198 +1,240 @@
+/***************************************************************************//**
+*  \file       driver.c
+*
+*  \details    Simple Linux device driver (Real Linux Device Driver)
+*
+*  \author     EmbeTronicX
+*
+*  \Tested with Linux raspberrypi 5.10.27-v7l-embetronicx-custom+
+*
+*******************************************************************************/
+#include <linux/kernel.h>
+#include <linux/init.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
-#include <linux/dma-mapping.h>
-#include <linux/slab.h>
+#include <linux/kdev_t.h>
 #include <linux/fs.h>
-#include <linux/uaccess.h>
 #include <linux/cdev.h>
+#include <linux/device.h>
+#include <linux/slab.h>                 //kmalloc()
+#include <linux/uaccess.h>              //copy_to/from_user()
+#include <linux/err.h>
+#include <linux/io.h>
+#include <linux/mm.h>
+ 
 
-#define DEVICE_NAME "my_dma_device"
+#define mem_size        ((1920*1080*3) + 4096)           //Memory Size
+ 
+dev_t dev = 0;
+static struct class *dev_class;
+static struct cdev etx_cdev;
+uint8_t *kernel_buffer;
+uint8_t *output_buffer;
 
-static void *dma_buffer1, *dma_buffer2;
-static dma_addr_t dma_handle1, dma_handle2;
-static struct platform_device *my_platform_device;
-static struct cdev my_cdev;
-static dev_t dev_num;
-static struct class *my_class;
+/*
+** Function Prototypes
+*/
+static int      __init etx_driver_init(void);
+static void     __exit etx_driver_exit(void);
+static int      etx_open(struct inode *inode, struct file *file);
+static int      etx_release(struct inode *inode, struct file *file);
+static ssize_t  etx_read(struct file *filp, char __user *buf, size_t len,loff_t * off);
+static ssize_t  etx_write(struct file *filp, const char *buf, size_t len, loff_t * off);
+static int      etx_mmap(struct file *filp, struct vm_area_struct *vma);
 
-#define DMA_BUFFER_SIZE ((1920*1080*3) + 4096)
 
-// Platform device release function
-static void my_platform_device_release(struct device *dev)
+/*
+** File Operations structure
+*/
+static struct file_operations fops =
 {
-    pr_info("Releasing my platform device\n");
-}
-
-// Platform driver probe function
-static int my_platform_driver_probe(struct platform_device *pdev)
-{
-    struct device *dev = &pdev->dev;
-
-    // Allocate first DMA buffer
-    dma_buffer1 = dma_alloc_coherent(dev, DMA_BUFFER_SIZE, &dma_handle1, GFP_KERNEL);
-    if (!dma_buffer1) {
-        pr_err("Failed to allocate DMA buffer1\n");
-        return -ENOMEM;
-    }
-
-    // Allocate second DMA buffer
-    dma_buffer2 = dma_alloc_coherent(dev, DMA_BUFFER_SIZE, &dma_handle2, GFP_KERNEL);
-    if (!dma_buffer2) {
-        pr_err("Failed to allocate DMA buffer2\n");
-        dma_free_coherent(dev, DMA_BUFFER_SIZE, dma_buffer1, dma_handle1);
-        return -ENOMEM;
-    }
-
-    pr_debug("DMA buffer1 allocated: virt=%p, phys=%pa\n", dma_buffer1, &dma_handle1);
-    pr_debug("DMA buffer2 allocated: virt=%p, phys=%pa\n", dma_buffer2, &dma_handle2);
-
-    return 0;
-}
-
-// Platform driver remove function
-static int my_platform_driver_remove(struct platform_device *pdev)
-{
-    struct device *dev = &pdev->dev;
-
-    if (dma_buffer2) {
-        dma_free_coherent(dev, DMA_BUFFER_SIZE, dma_buffer2, dma_handle2);
-        pr_debug("DMA buffer2 freed\n");
-    }
-    if (dma_buffer1) {
-        dma_free_coherent(dev, DMA_BUFFER_SIZE, dma_buffer1, dma_handle1);
-        pr_debug("DMA buffer1 freed\n");
-    }
-
-    return 0;
-}
-
-// Optimized mmap function
-static int my_mmap(struct file *file, struct vm_area_struct *vma)
-{
-    struct device *dev = &my_platform_device->dev; // Assumes my_platform_device is valid
-    size_t size = vma->vm_end - vma->vm_start;
-
-    if (vma->vm_pgoff == 0) {
-        pr_debug("Mapping Buffer 1: size=%zu\n", size);
-        return dma_mmap_coherent(dev, vma, dma_buffer1, dma_handle1, size);
-    } else if (vma->vm_pgoff == 1) {
-        pr_debug("Mapping Buffer 2: size=%zu\n", size);
-        return dma_mmap_coherent(dev, vma, dma_buffer2, dma_handle2, size);
-    }
-
-    pr_err("Invalid vm_pgoff: %lu\n", vma->vm_pgoff);
-    return -EINVAL;
-}
-
-// File operations structure
-static struct file_operations fops = {
-    .owner = THIS_MODULE,
-    .mmap = my_mmap,
+        .owner          = THIS_MODULE,
+        .read           = etx_read,
+        .write          = etx_write,
+        .open           = etx_open,
+        .release        = etx_release,
+        .mmap           = etx_mmap,
 };
-
-// Platform driver structure
-static struct platform_driver my_platform_driver = {
-    .driver = {
-        .name = "my_platform_device",
-    },
-    .probe = my_platform_driver_probe,
-    .remove = my_platform_driver_remove,
-};
-
-// Initialization function
-static int __init my_init(void)
+ 
+/*
+** This function will be called when we open the Device file
+*/
+static int etx_open(struct inode *inode, struct file *file)
 {
-    int ret;
-    struct device *device;
+        pr_info("etx_open: Device File Opened...!!!\n");
+        return 0;
+}
 
-    // Register character device
-    ret = alloc_chrdev_region(&dev_num, 0, 1, DEVICE_NAME);
-    if (ret) {
-        pr_err("Failed to allocate chrdev region: %d\n", ret);
-        return ret;
+/*
+** This function will be called when we close the Device file
+*/
+static int etx_release(struct inode *inode, struct file *file)
+{
+        pr_info("etx_release: Device File Closed...!!!\n");
+        return 0;
+}
+
+/*
+** This function will be called when we read the Device file
+*/
+static ssize_t etx_read(struct file *filp, char __user *buf, size_t len, loff_t *off)
+{
+        pr_info("etx_read: Read operation started. Requested len = %zu\n", len);
+
+        if( copy_to_user(buf, kernel_buffer, mem_size) )
+        {
+                pr_err("etx_read: Failed to copy data from kernel to user\n");
+                return -EFAULT;
+        }
+
+        pr_info("etx_read: Data Read: %d bytes sent to user\n", mem_size);
+        return mem_size;
+}
+
+/*
+ * This function will be called when we map the device to user space
+ */
+static int etx_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+    unsigned long size = mem_size;
+    unsigned long start = vma->vm_start;
+    unsigned long page_offset = vma->vm_pgoff * PAGE_SIZE; // Initial offset to select buffer
+    unsigned long buffer_offset = 0; // Offset within the selected buffer
+    unsigned long end = start + (size - page_offset < vma->vm_end - vma->vm_start ? 
+                                size - page_offset : vma->vm_end - vma->vm_start);
+    unsigned long virt_addr;
+    struct page *page;
+
+    pr_info("etx_mmap: mmap operation started, vma->vm_pgoff = %ld\n", vma->vm_pgoff);
+
+    if (page_offset >= size) {
+        pr_err("etx_mmap: Invalid mmap offset %ld\n", vma->vm_pgoff);
+        return -EINVAL;
     }
 
-    cdev_init(&my_cdev, &fops);
-    my_cdev.owner = THIS_MODULE;
-    ret = cdev_add(&my_cdev, dev_num, 1);
-    if (ret) {
-        pr_err("Failed to add cdev: %d\n", ret);
-        goto unregister_chrdev;
+    // Select the correct buffer based on vma->vm_pgoff
+    uint8_t *buffer = (vma->vm_pgoff == 0) ? kernel_buffer : output_buffer;
+
+    // Map the entire buffer page-by-page
+    for (virt_addr = start; virt_addr < end; virt_addr += PAGE_SIZE, buffer_offset += PAGE_SIZE) {
+        page = vmalloc_to_page(buffer + buffer_offset);
+        if (!page) {
+            pr_err("etx_mmap: Failed to get page at buffer_offset %ld\n", buffer_offset);
+            return -EFAULT;
+        }
+
+        if (remap_pfn_range(vma, virt_addr, page_to_pfn(page), PAGE_SIZE, vma->vm_page_prot)) {
+            pr_err("etx_mmap: remap_pfn_range failed\n");
+            return -EAGAIN;
+        }
     }
 
-    my_class = class_create(DEVICE_NAME);
-    if (IS_ERR(my_class)) {
-        ret = PTR_ERR(my_class);
-        pr_err("Failed to create class: %d\n", ret);
-        goto del_cdev;
-    }
-
-    device = device_create(my_class, NULL, dev_num, NULL, DEVICE_NAME);
-    if (IS_ERR(device)) {
-        ret = PTR_ERR(device);
-        pr_err("Failed to create device: %d\n", ret);
-        goto destroy_class;
-    }
-
-    // Register platform device
-    my_platform_device = platform_device_alloc("my_platform_device", -1);
-    if (!my_platform_device) {
-        ret = -ENOMEM;
-        pr_err("Failed to allocate platform device\n");
-        goto destroy_device;
-    }
-
-    my_platform_device->dev.release = my_platform_device_release;
-    ret = platform_device_add(my_platform_device);
-    if (ret) {
-        pr_err("Failed to add platform device: %d\n", ret);
-        goto put_device;
-    }
-
-    // Register platform driver
-    ret = platform_driver_register(&my_platform_driver);
-    if (ret) {
-        pr_err("Failed to register platform driver: %d\n", ret);
-        goto del_platform_device;
-    }
-
-    pr_info("Module loaded successfully\n");
+    pr_info("etx_mmap: Memory successfully mapped to user space (vma->vm_start = %lx)\n", vma->vm_start);
     return 0;
-
-del_platform_device:
-    platform_device_del(my_platform_device);
-put_device:
-    platform_device_put(my_platform_device);
-destroy_device:
-    device_destroy(my_class, dev_num);
-destroy_class:
-    class_destroy(my_class);
-del_cdev:
-    cdev_del(&my_cdev);
-unregister_chrdev:
-    unregister_chrdev_region(dev_num, 1);
-    return ret;
 }
-
-// Cleanup function
-static void __exit my_exit(void)
+/*
+** This function will be called when we write the Device file
+*/
+static ssize_t etx_write(struct file *filp, const char __user *buf, size_t len, loff_t *off)
 {
-    platform_driver_unregister(&my_platform_driver);
-    if (my_platform_device)
-        platform_device_unregister(my_platform_device);
-    if (my_class) {
-        device_destroy(my_class, dev_num);
-        class_destroy(my_class);
-    }
-    cdev_del(&my_cdev);
-    unregister_chrdev_region(dev_num, 1);
+        pr_info("etx_write: Write operation started. Requested len = %zu\n", len);
 
-    pr_info("Module unloaded successfully\n");
+        // Copy the data to kernel space from the user-space
+        if( copy_from_user(kernel_buffer, buf, len) )
+        {
+                pr_err("etx_write: Failed to copy data from user to kernel\n");
+                return -EFAULT;
+        }
+
+        pr_info("etx_write: Data copied to kernel buffer. Copying %d bytes to output buffer\n", mem_size);
+        
+        memcpy(output_buffer, kernel_buffer, mem_size);
+
+        pr_info("etx_write: Data Write: %d bytes written to output buffer\n", mem_size);
+        return len;
 }
 
-module_init(my_init);
-module_exit(my_exit);
+/*
+** Module Init function
+*/
+static int __init etx_driver_init(void)
+{
+        pr_info("etx_driver_init: Initializing the etx driver\n");
 
+        /* Allocating Major number */
+        if((alloc_chrdev_region(&dev, 0, 1, "etx_Dev")) < 0) {
+                pr_err("etx_driver_init: Cannot allocate major number\n");
+                return -1;
+        }
+        pr_info("etx_driver_init: Major = %d Minor = %d \n", MAJOR(dev), MINOR(dev));
+
+        /* Creating cdev structure */
+        cdev_init(&etx_cdev, &fops);
+
+        /* Adding character device to the system */
+        if((cdev_add(&etx_cdev, dev, 1)) < 0) {
+            pr_err("etx_driver_init: Cannot add the device to the system\n");
+            goto r_class;
+        }
+
+        /* Creating struct class */
+        if(IS_ERR(dev_class = class_create("etx_class"))) {
+            pr_err("etx_driver_init: Cannot create the struct class\n");
+            goto r_class;
+        }
+
+        /* Creating device */
+        if(IS_ERR(device_create(dev_class, NULL, dev, NULL, "etx_device"))) {
+            pr_err("etx_driver_init: Cannot create the Device\n");
+            goto r_device;
+        }
+
+        /* Allocating physical memory */
+        if((kernel_buffer = vmalloc(mem_size)) == NULL) {
+            pr_err("etx_driver_init: Cannot allocate memory for kernel buffer\n");
+            goto r_device;
+        }
+
+        if((output_buffer = vmalloc(mem_size)) == NULL) {
+            pr_err("etx_driver_init: Cannot allocate memory for output buffer\n");
+            goto r_output_buffer;
+        }
+        
+        pr_info("etx_driver_init: Device Driver Insert...Done!!!\n");
+        return 0;
+
+r_output_buffer:
+        vfree(kernel_buffer);
+r_device:
+        device_destroy(dev_class, dev);
+        class_destroy(dev_class);
+r_class:
+        unregister_chrdev_region(dev, 1);
+        pr_err("etx_driver_init: Device Driver Insert failed\n");
+        return -1;
+}
+
+/*
+** Module exit function
+*/
+static void __exit etx_driver_exit(void)
+{
+    pr_info("etx_driver_exit: Removing the etx driver\n");
+
+    vfree(kernel_buffer);
+    vfree(output_buffer);
+    device_destroy(dev_class, dev);
+    class_destroy(dev_class);
+    cdev_del(&etx_cdev);
+    unregister_chrdev_region(dev, 1);
+
+    pr_info("etx_driver_exit: Device Driver Remove...Done!!!\n");
+}
+ 
+module_init(etx_driver_init);
+module_exit(etx_driver_exit);
+ 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Your Name");
-MODULE_DESCRIPTION("Platform Driver with Two DMA Buffers and mmap Support");
+MODULE_AUTHOR("EmbeTronicX <embetronicx@gmail.com>");
+MODULE_DESCRIPTION("Simple Linux device driver (Real Linux Device Driver)");
+MODULE_VERSION("1.4");
+
