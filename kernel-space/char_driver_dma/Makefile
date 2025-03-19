@@ -1,4 +1,4 @@
-obj-m += char_driver.o
+obj-m += char_driver_ops.o
 
 all: module userapp
 
