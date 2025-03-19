@@ -91,6 +91,7 @@ void savePPM(const char* filename, Resolution* res) {
     fprintf(file, "P6\n%d %d\n255\n", res->width, res->height);
 
     // Write RGB data
+    #pragma omp parallel for
     for (int i = 0; i < res->width * res->height * PIXEL_SIZE; i += PIXEL_SIZE) {
         fwrite(&res->data[i], 1, 3, file);  // Write only R, G, B
     }
@@ -169,10 +170,6 @@ int main() {
         }
     }
 
-    // Save the initial input image for debugging
-    printf("[INFO] Saving input image to input.ppm\n");
-    savePPM("input.ppm", &srcRes);
-    
     // Start measuring time
     printf("[INFO] Starting %d iterations of image scaling...\n", MAX_ITERATIONS);
     double start_time = omp_get_wtime();
@@ -180,7 +177,6 @@ int main() {
     // Process multiple iterations
     #pragma omp parallel for
     for (int i = 0; i < MAX_ITERATIONS; i++) {
-        // Scale the image using the Resolution structs
         scaleImage(&srcRes, &dstRes);
     }
 
@@ -189,10 +185,6 @@ int main() {
     double total_time = end_time - start_time;
     double avg_time = total_time / MAX_ITERATIONS;
 
-    // Save the output image for debugging
-    printf("[INFO] Saving output image to output.ppm\n");
-    savePPM("output.ppm", &dstRes);
-    
     printf("[INFO] Completed %d scaling operations in %.6f seconds (avg: %.6f sec/operation)\n", 
            MAX_ITERATIONS, total_time, avg_time);
 
