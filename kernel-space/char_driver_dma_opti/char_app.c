@@ -43,10 +43,9 @@ void scaleImage(unsigned char* src, unsigned char* dst,
         srcRowOffset[y] = ((y * y_ratio) >> 16) * src_width * PIXEL_SIZE;
     }
 
-    #pragma omp parallel for schedule(dynamic, 8)
+    #pragma omp parallel for schedule(dynamic, 12)
     for (int y = 0; y < dst_height; y++) {
         int rowOffset = srcRowOffset[y];
-
         for (int x = 0; x < dst_width; x += 4) {  // Unroll loop (process 4 pixels)
             int srcX1 = (x * x_ratio) >> 16;
             int srcX2 = ((x + 1) * x_ratio) >> 16;
@@ -99,6 +98,7 @@ int main() {
     int fd;
     unsigned char *kernel_buffer, *output_buffer;
     size_t input_size = MEM_SIZE;
+    int num_threads = omp_get_max_threads();
 
     fd = open("/dev/etx_device", O_RDWR);
     if (fd < 0) {
@@ -128,7 +128,7 @@ int main() {
     Resolution srcRes = {SRC_WIDTH, SRC_HEIGHT, kernel_buffer};
     Resolution dstRes = {DST_WIDTH, DST_HEIGHT, output_buffer};
 
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(dynamic, 12)
     for (size_t i = 0; i < input_size; i++) {
         kernel_buffer[i] = rand() % 256;
     }
