@@ -13,7 +13,7 @@ int main(int argc, char *argv[]) {
     drmModeRes *resources = NULL;
 
     // Open the DRM device
-    fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+    fd = open("/dev/dri/card2", O_RDWR | O_CLOEXEC);
     if (fd < 0) {
         perror("Cannot open DRM device");
         return -1;
