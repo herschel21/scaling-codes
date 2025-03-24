@@ -13,7 +13,7 @@
 #include <GLES2/gl2.h>
 
 // Hardcoded DRM Device and Resolution
-#define DRM_DEVICE "/dev/dri/card0"
+#define DRM_DEVICE "/dev/dri/card2"
 #define SCREEN_WIDTH 1920
 #define SCREEN_HEIGHT 1080
 #define SRC_WIDTH 640

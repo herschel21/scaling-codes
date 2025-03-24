@@ -12,14 +12,14 @@ int main(int argc, char *argv[]) {
     drmModeEncoder *encoder = NULL;
     drmModeCrtc *crtc = NULL;
     drmModeRes *resources = NULL;
-    uint32_t connector_id = 34; // hard coded for now
+    uint32_t connector_id = 35; // hard coded for now
     uint32_t crtc_id = 33; // hard coded for now
     uint32_t fb_id;
     void *fb_base;
     int ret;
 
     // Open the DRM device
-    fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+    fd = open("/dev/dri/card2", O_RDWR | O_CLOEXEC);
     if (fd < 0) {
         perror("Cannot open DRM device");
         return -1;
