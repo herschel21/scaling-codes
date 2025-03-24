@@ -79,14 +79,6 @@ int main() {
 
     printf("Framebuffer resolution: %dx%d\n", fb_width, fb_height);
 
-    // Enable double buffering if supported
-    vinfo.yoffset = 0;
-    if (ioctl(fb_fd, FBIOPAN_DISPLAY, &vinfo) == 0) {
-        printf("Double buffering supported!\n");
-    } else {
-        printf("Double buffering NOT supported. Using single buffer.\n");
-    }
-
     // Map framebuffer memory
     unsigned char *fb_base = (unsigned char *)mmap(0, fb_size, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, 0);
     if (fb_base == MAP_FAILED) {
@@ -114,31 +106,18 @@ int main() {
     }
 
     // Scale the image
-    scaleResolution(&srcRes, &dstRes);
+    for (int i=0; i < 101; i++) {
+            scaleResolution(&srcRes, &dstRes);
+    }
 
-    // Double buffering setup (if supported)
-    int front_buffer_offset = 0;
-    int back_buffer_offset = fb_size / 2;
-    int use_double_buffer = (ioctl(fb_fd, FBIOPAN_DISPLAY, &vinfo) == 0);
+    // Copy scaled image to framebuffer
+    memcpy(fb_base, dstRes.data, dstSize);
 
+    printf("Displaying scaled random image. Press Ctrl+C to exit.\n");
+
+    // Keep running to display image
     while (1) {
-        // Write the scaled image to the back buffer
-        unsigned char *back_buffer = fb_base + (use_double_buffer ? back_buffer_offset : 0);
-        memcpy(back_buffer, dstRes.data, dstSize);
-
-        // Sync to screen
-        msync(back_buffer, dstSize, MS_SYNC);
-
-        // Swap buffers if double buffering is supported
-        if (use_double_buffer) {
-            vinfo.yoffset = (vinfo.yoffset == 0) ? fb_height : 0;
-            ioctl(fb_fd, FBIOPAN_DISPLAY, &vinfo);
-        }
-
-        // Regenerate random image every few seconds
         sleep(1);
-        initResolution(SRC_WIDTH, SRC_HEIGHT);
-        scaleResolution(&srcRes, &dstRes);
     }
 
     // Cleanup
