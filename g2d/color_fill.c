@@ -1,22 +1,38 @@
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
+#include <X11/Xlib.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 
+Display *x_display;
+Window x_window;
 EGLDisplay egl_display;
 EGLSurface egl_surface;
 EGLContext egl_context;
 
+void initX11Window(int width, int height) {
+    x_display = XOpenDisplay(NULL);
+    if (!x_display) {
+        printf("Failed to open X display\n");
+        exit(1);
+    }
+
+    int screen = DefaultScreen(x_display);
+    x_window = XCreateSimpleWindow(x_display, RootWindow(x_display, screen), 10, 10, width, height, 1,
+                                   BlackPixel(x_display, screen), WhitePixel(x_display, screen));
+    XMapWindow(x_display, x_window);
+}
+
 void initEGL() {
-    egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    egl_display = eglGetDisplay((EGLNativeDisplayType)x_display);
     eglInitialize(egl_display, NULL, NULL);
 
     EGLConfig config;
     EGLint numConfigs;
     EGLint configAttribs[] = {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,  // Using PBuffer for offscreen rendering
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
         EGL_BLUE_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_RED_SIZE, 8,
         EGL_DEPTH_SIZE, 24,
         EGL_NONE
@@ -24,8 +40,7 @@ void initEGL() {
 
     eglChooseConfig(egl_display, configAttribs, &config, 1, &numConfigs);
 
-    EGLint pbufferAttribs[] = { EGL_WIDTH, 800, EGL_HEIGHT, 600, EGL_NONE };
-    egl_surface = eglCreatePbufferSurface(egl_display, config, pbufferAttribs);
+    egl_surface = eglCreateWindowSurface(egl_display, config, (EGLNativeWindowType)x_window, NULL);
 
     EGLint contextAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
     egl_context = eglCreateContext(egl_display, config, EGL_NO_CONTEXT, contextAttribs);
@@ -40,14 +55,12 @@ void render() {
 }
 
 int main() {
-    initEGL();  // Initialize EGL
+    initX11Window(800, 600);  // Create X11 window
+    initEGL();                // Initialize EGL
 
-    for (int i = 0; i < 300; ++i) {  // Run for 5 seconds (~60 FPS)
-        render();  
-        usleep(16000);  
+    while (1) {
+        render();  // Render frame
     }
 
-    eglTerminate(egl_display);
     return 0;
 }
-
