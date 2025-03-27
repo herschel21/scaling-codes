@@ -1,0 +1,29 @@
+#!/bin/bash
+
+# List of resolutions
+resolutions=(
+    "640x480"
+    "800x600"
+    "1024x768"
+    "1152x864"
+    "1366x768"
+    "1280x800"
+    "1280x1024"
+    "1440x900"
+    "1600x1200"
+    "1920x1080"
+)
+
+# Loop through each resolution and process with GStreamer
+for res in "${resolutions[@]}"; do
+    input_video="bbb-${res}.mp4"
+
+    echo "Running GStreamer pipeline on: $input_video"
+
+    gst-launch-1.0 filesrc location="$input_video" ! qtdemux ! vpudec ! imxvideoconvert_g2d ! videoscale ! video/x-raw,width=1920,height=1080 ! videorate ! video/x-raw, framerate=60/1 ! autovideosink
+
+    echo "Finished processing: $input_video"
+done
+
+echo "All videos have been processed successfully!"
+
