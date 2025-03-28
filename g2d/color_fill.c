@@ -1,66 +1,93 @@
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
-#include <X11/Xlib.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-
-Display *x_display;
-Window x_window;
-EGLDisplay egl_display;
-EGLSurface egl_surface;
-EGLContext egl_context;
-
-void initX11Window(int width, int height) {
-    x_display = XOpenDisplay(NULL);
-    if (!x_display) {
-        printf("Failed to open X display\n");
-        exit(1);
-    }
-
-    int screen = DefaultScreen(x_display);
-    x_window = XCreateSimpleWindow(x_display, RootWindow(x_display, screen), 10, 10, width, height, 1,
-                                   BlackPixel(x_display, screen), WhitePixel(x_display, screen));
-    XMapWindow(x_display, x_window);
-}
-
-void initEGL() {
-    egl_display = eglGetDisplay((EGLNativeDisplayType)x_display);
-    eglInitialize(egl_display, NULL, NULL);
-
-    EGLConfig config;
-    EGLint numConfigs;
-    EGLint configAttribs[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_BLUE_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_RED_SIZE, 8,
-        EGL_DEPTH_SIZE, 24,
-        EGL_NONE
-    };
-
-    eglChooseConfig(egl_display, configAttribs, &config, 1, &numConfigs);
-
-    egl_surface = eglCreateWindowSurface(egl_display, config, (EGLNativeWindowType)x_window, NULL);
-
-    EGLint contextAttribs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
-    egl_context = eglCreateContext(egl_display, config, EGL_NO_CONTEXT, contextAttribs);
-
-    eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);
-}
-
-void render() {
-    glClearColor(0.0, 0.0, 1.0, 1.0);
-    glClear(GL_COLOR_BUFFER_BIT);
-    eglSwapBuffers(egl_display, egl_surface);
-}
 
 int main() {
-    initX11Window(800, 600);  // Create X11 window
-    initEGL();                // Initialize EGL
+    // EGL variables
+    EGLDisplay display;
+    EGLConfig config;
+    EGLContext context;
+    EGLSurface surface;
+    
+    // Native window (not used in this example, but needed for EGL)
+    EGLNativeWindowType window = 0;
 
-    while (1) {
-        render();  // Render frame
+    // Initialize EGL
+    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (display == EGL_NO_DISPLAY) {
+        fprintf(stderr, "Failed to get EGL display\n");
+        return 1;
     }
+
+    // Initialize EGL
+    if (eglInitialize(display, 0, 0) == EGL_FALSE) {
+        fprintf(stderr, "Failed to initialize EGL\n");
+        return 1;
+    }
+
+    // Choose EGL configuration
+    EGLint config_attribs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_BLUE_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_RED_SIZE, 8,
+        EGL_DEPTH_SIZE, 24,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_NONE
+    };
+    EGLint num_configs;
+    if (eglChooseConfig(display, config_attribs, &config, 1, &num_configs) == EGL_FALSE) {
+        fprintf(stderr, "Failed to choose EGL config\n");
+        eglTerminate(display);
+        return 1;
+    }
+
+    // Create EGL context
+    EGLint context_attribs[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE
+    };
+    context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attribs);
+    if (context == EGL_NO_CONTEXT) {
+        fprintf(stderr, "Failed to create EGL context\n");
+        eglTerminate(display);
+        return 1;
+    }
+
+    // Create EGL surface (using native window)
+    surface = eglCreateWindowSurface(display, config, window, NULL);
+    if (surface == EGL_NO_SURFACE) {
+        fprintf(stderr, "Failed to create EGL surface\n");
+        eglDestroyContext(display, context);
+        eglTerminate(display);
+        return 1;
+    }
+
+    // Bind the context to the current rendering thread
+    if (eglMakeCurrent(display, surface, surface, context) == EGL_FALSE) {
+        fprintf(stderr, "Failed to make EGL context current\n");
+        eglDestroySurface(display, surface);
+        eglDestroyContext(display, context);
+        eglTerminate(display);
+        return 1;
+    }
+
+    // Clear screen to blue
+    glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    // Swap buffers
+    eglSwapBuffers(display, surface);
+
+    // Wait for a few seconds
+    sleep(5);
+
+    // Clean up
+    eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    eglDestroySurface(display, surface);
+    eglDestroyContext(display, context);
+    eglTerminate(display);
 
     return 0;
 }
