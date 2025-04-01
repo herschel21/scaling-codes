@@ -6,6 +6,8 @@
 
 #define WINDOW_WIDTH 640
 #define WINDOW_HEIGHT 480
+#define IMAGE_WIDTH 256  // Width of the generated image
+#define IMAGE_HEIGHT 256 // Height of the generated image
 
 EGLDisplay egl_display;
 EGLContext egl_context;
@@ -73,46 +75,31 @@ GLuint create_program(const char *vertex_src, const char *fragment_src) {
     return program;
 }
 
-// Load BMP image (basic uncompressed BMP format)
-GLuint load_bmp_image(const char *image_path, int *width, int *height) {
-    FILE *file = fopen(image_path, "rb");
-    if (!file) {
-        printf("Failed to open image file %s\n", image_path);
-        return 0;
+// Create a gradient image (RGBA format)
+GLuint create_gradient_image(int *width, int *height) {
+    *width = IMAGE_WIDTH;
+    *height = IMAGE_HEIGHT;
+    
+    unsigned char *data = (unsigned char *)malloc(*width * *height * 4);  // RGBA format
+
+    // Create a simple gradient (horizontal gradient from red to blue)
+    for (int y = 0; y < *height; ++y) {
+        for (int x = 0; x < *width; ++x) {
+            data[(y * *width + x) * 4 + 0] = (unsigned char)((float)x / *width * 255);  // Red
+            data[(y * *width + x) * 4 + 1] = 0;                                    // Green
+            data[(y * *width + x) * 4 + 2] = (unsigned char)((float)(*width - x) / *width * 255);  // Blue
+            data[(y * *width + x) * 4 + 3] = 255;  // Alpha (fully opaque)
+        }
     }
 
-    // Read the BMP header
-    fseek(file, 18, SEEK_SET);
-    fread(width, sizeof(int), 1, file);
-    fread(height, sizeof(int), 1, file);
-
-    fseek(file, 54, SEEK_SET);  // Skip the BMP header
-
-    int size = (*width) * (*height) * 3;  // 3 bytes per pixel for RGB
-    unsigned char *data = (unsigned char *)malloc(size);
-    fread(data, 1, size, file);
-    fclose(file);
-
-    // Convert RGB to RGBA (add alpha channel)
-    unsigned char *rgba_data = (unsigned char *)malloc(*width * *height * 4);
-    for (int i = 0; i < *width * *height; ++i) {
-        rgba_data[i * 4 + 0] = data[i * 3 + 0];  // Red
-        rgba_data[i * 4 + 1] = data[i * 3 + 1];  // Green
-        rgba_data[i * 4 + 2] = data[i * 3 + 2];  // Blue
-        rgba_data[i * 4 + 3] = 255;               // Alpha (fully opaque)
-    }
-
-    free(data);
-
-    // Generate OpenGL texture
     GLuint texture_id;
     glGenTextures(1, &texture_id);
     glBindTexture(GL_TEXTURE_2D, texture_id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, *width, *height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba_data);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, *width, *height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
 
-    free(rgba_data);
+    free(data);
     return texture_id;
 }
 
@@ -171,7 +158,7 @@ void render(int target_width, int target_height) {
     glEnableVertexAttribArray(texcoord_loc);
 
     int width, height;
-    texture = load_bmp_image("input_image.bmp", &width, &height);
+    texture = create_gradient_image(&width, &height);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture);
