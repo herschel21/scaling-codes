@@ -3,37 +3,11 @@
 #include <GLES2/gl2.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
-// Globals for Wayland
+// Globals
 struct wl_display *display;
-struct wl_compositor *compositor;
-struct wl_surface *surface;
-struct wl_shell *shell;
-struct wl_shell_surface *shell_surface;
-
-// Globals for EGL
 EGLDisplay egl_display;
 EGLContext egl_context;
-EGLSurface egl_surface;
-
-static void registry_handle_global(void *data, struct wl_registry *registry,
-                                   uint32_t name, const char *interface,
-                                   uint32_t version) {
-    if (strcmp(interface, "wl_compositor") == 0) {
-        compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 1);
-    } else if (strcmp(interface, "wl_shell") == 0) {
-        shell = wl_registry_bind(registry, name, &wl_shell_interface, 1);
-    }
-}
-
-static void registry_handle_global_remove(void *data, struct wl_registry *registry,
-                                          uint32_t name) {}
-
-static const struct wl_registry_listener registry_listener = {
-    registry_handle_global,
-    registry_handle_global_remove
-};
 
 void init_wayland() {
     display = wl_display_connect(NULL);
@@ -41,61 +15,59 @@ void init_wayland() {
         fprintf(stderr, "Failed to connect to Wayland display\n");
         exit(EXIT_FAILURE);
     }
-
-    struct wl_registry *registry = wl_display_get_registry(display);
-    wl_registry_add_listener(registry, &registry_listener, NULL);
-    wl_display_roundtrip(display);
-
-    surface = wl_compositor_create_surface(compositor);
-    shell_surface = wl_shell_get_shell_surface(shell, surface);
-    wl_shell_surface_set_toplevel(shell_surface);
 }
 
 void init_egl() {
-    static const EGLint config_attribs[] = {
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RED_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 8,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-        EGL_NONE
-    };
-    
+    egl_display = eglGetDisplay((EGLNativeDisplayType)display);
+    if (egl_display == EGL_NO_DISPLAY) {
+        fprintf(stderr, "Failed to get EGL display\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (!eglInitialize(egl_display, NULL, NULL)) {
+        fprintf(stderr, "Failed to initialize EGL\n");
+        exit(EXIT_FAILURE);
+    }
+
+    eglBindAPI(EGL_OPENGL_ES_API);
+
     static const EGLint context_attribs[] = {
         EGL_CONTEXT_CLIENT_VERSION, 2,
         EGL_NONE
     };
 
-    egl_display = eglGetDisplay((EGLNativeDisplayType)display);
-    eglInitialize(egl_display, NULL, NULL);
-
     EGLConfig config;
     EGLint num_configs;
+    static const EGLint config_attribs[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_NONE
+    };
+
     eglChooseConfig(egl_display, config_attribs, &config, 1, &num_configs);
-
-    eglBindAPI(EGL_OPENGL_ES_API);
-
     egl_context = eglCreateContext(egl_display, config, EGL_NO_CONTEXT, context_attribs);
-    egl_surface = eglCreateWindowSurface(egl_display, config, (EGLNativeWindowType)surface, NULL);
 
-    eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);
+    if (egl_context == EGL_NO_CONTEXT) {
+        fprintf(stderr, "Failed to create EGL context\n");
+        exit(EXIT_FAILURE);
+    }
+
+    eglMakeCurrent(egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, egl_context);
 }
 
-void draw_frame() {
-    glClearColor(0.0f, 0.0f, 1.0f, 1.0f);  // Blue background
-    glClear(GL_COLOR_BUFFER_BIT);
-    eglSwapBuffers(egl_display, egl_surface);
+void print_gpu_info() {
+    printf("OpenGL ES Version: %s\n", glGetString(GL_VERSION));
+    printf("GLSL Version: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
+    printf("GPU Vendor: %s\n", glGetString(GL_VENDOR));
+    printf("GPU Renderer: %s\n", glGetString(GL_RENDERER));
 }
 
 int main() {
     init_wayland();
     init_egl();
+    print_gpu_info();
 
-    while (1) {
-        wl_display_dispatch_pending(display);
-        draw_frame();
-    }
+    eglTerminate(egl_display);
+    wl_display_disconnect(display);
 
     return 0;
 }
