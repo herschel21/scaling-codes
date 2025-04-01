@@ -6,8 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define WINDOW_WIDTH  640  // Set your desired width
-#define WINDOW_HEIGHT 480  // Set your desired height
+#define WINDOW_WIDTH  1920  // Set your desired width
+#define WINDOW_HEIGHT 1080 // Set your desired height
 
 // Globals
 struct wl_display *display;
