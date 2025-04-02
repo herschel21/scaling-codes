@@ -508,7 +508,6 @@ void init_gl() {
 // Function to perform a single scaling operation
 void perform_scaling() {
     // Generate a new random image for each iteration
-    init_texture();
 
     // Bind to framebuffer for offscreen rendering
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
@@ -720,6 +719,8 @@ int main(int argc, char **argv) {
     init_gl();
     
     // Perform batch scaling operations and measure performance
+    init_texture();
+
     batch_scaling(output_path);
     
     
