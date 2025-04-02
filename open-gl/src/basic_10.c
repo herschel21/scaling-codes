@@ -1,3 +1,5 @@
+#include <wayland-client.h>
+#include <wayland-egl.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <stdio.h>
@@ -6,11 +8,40 @@
 #include <math.h>
 #include <time.h>  // For timing the scaling operations
 
+// X11 includes - add these for X11 support
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <EGL/eglplatform.h>
+
 #define WINDOW_WIDTH  1920  // Set your desired width
 #define WINDOW_HEIGHT 1080  // Set your desired height
 #define SCALING_ITERATIONS 100  // Number of times to perform scaling
 
-// EGL globals
+// Enum to track which display server we're using
+typedef enum {
+    DISPLAY_WAYLAND,
+    DISPLAY_X11,
+    DISPLAY_UNKNOWN
+} DisplayServerType;
+
+// Globals
+DisplayServerType display_server_type = DISPLAY_UNKNOWN;
+
+// Wayland globals
+struct wl_display *wl_display;
+struct wl_compositor *compositor;
+struct wl_surface *wl_surface;
+struct wl_egl_window *wl_egl_window;
+struct wl_shell *shell;
+struct wl_shell_surface *shell_surface;
+
+// X11 globals
+Display *x_display = NULL;
+Window x_window;
+Colormap x_colormap;
+XVisualInfo *x_visual_info;
+
+// Common EGL globals
 EGLDisplay egl_display;
 EGLContext egl_context;
 EGLSurface egl_surface;
@@ -41,6 +72,24 @@ const char *fragment_shader_source =
     "  gl_FragColor = texture2D(texture, v_texcoord);\n"
     "}\n";
 
+static void registry_handle_global(void *data, struct wl_registry *registry,
+                                   uint32_t name, const char *interface,
+                                   uint32_t version) {
+    if (strcmp(interface, "wl_compositor") == 0) {
+        compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 1);
+    } else if (strcmp(interface, "wl_shell") == 0) {
+        shell = wl_registry_bind(registry, name, &wl_shell_interface, 1);
+    }
+}
+
+static void registry_handle_global_remove(void *data, struct wl_registry *registry,
+                                          uint32_t name) {}
+
+static const struct wl_registry_listener registry_listener = {
+    registry_handle_global,
+    registry_handle_global_remove
+};
+
 // Simple structure to hold image data
 typedef struct {
     unsigned char* data;
@@ -49,82 +98,53 @@ typedef struct {
     int channels; // Number of channels (e.g., 3 for RGB, 4 for RGBA)
 } Image;
 
-// Function to load a PPM image (P6 format - binary)
-Image* load_ppm(const char* filename) {
-    FILE* file = fopen(filename, "rb");
-    if (!file) {
-        fprintf(stderr, "Error opening file: %s\n", filename);
-        return NULL;
+// Function to detect available display server
+DisplayServerType detect_display_server() {
+    // Try to connect to Wayland first
+    struct wl_display *test_display = wl_display_connect(NULL);
+    if (test_display) {
+        printf("Wayland display server detected\n");
+        wl_display_disconnect(test_display);
+        return DISPLAY_WAYLAND;
     }
     
-    // Allocate image struct
+    // Try X11 next
+    Display *test_x_display = XOpenDisplay(NULL);
+    if (test_x_display) {
+        printf("X11 display server detected\n");
+        XCloseDisplay(test_x_display);
+        return DISPLAY_X11;
+    }
+    
+    printf("No supported display server detected\n");
+    return DISPLAY_UNKNOWN;
+}
+
+// Function to generate a random image
+Image* generate_random_image(int width, int height) {
     Image* img = (Image*)malloc(sizeof(Image));
     if (!img) {
-        fclose(file);
         return NULL;
     }
-    
-    // Read PPM header
-    char header[3];
-    fread(header, 1, 3, file);
-    if (header[0] != 'P' || header[1] != '6') {
-        fprintf(stderr, "Not a valid P6 PPM file\n");
-        free(img);
-        fclose(file);
-        return NULL;
-    }
-    
-    // Skip comments
-    int c = getc(file);
-    while (c == '#') {
-        while (getc(file) != '\n');
-        c = getc(file);
-    }
-    ungetc(c, file);
-    
-    // Read width and height
-    if (fscanf(file, "%d %d", &img->width, &img->height) != 2) {
-        fprintf(stderr, "Invalid PPM file: could not read width/height\n");
-        free(img);
-        fclose(file);
-        return NULL;
-    }
-    
-    // Read max color value
-    int maxval;
-    if (fscanf(file, "%d", &maxval) != 1) {
-        fprintf(stderr, "Invalid PPM file: could not read max color value\n");
-        free(img);
-        fclose(file);
-        return NULL;
-    }
-    
-    // Skip whitespace
-    fgetc(file);
-    
-    // Set channels to 3 (RGB) for PPM
-    img->channels = 3;
-    
-    // Allocate memory for image data
-    img->data = (unsigned char*)malloc(img->width * img->height * img->channels);
+
+    img->width = width;
+    img->height = height;
+    img->channels = 3;  // RGB
+
+    img->data = (unsigned char*)malloc(width * height * img->channels);
     if (!img->data) {
-        fprintf(stderr, "Could not allocate memory for image data\n");
         free(img);
-        fclose(file);
         return NULL;
     }
-    
-    // Read image data
-    if (fread(img->data, 1, img->width * img->height * img->channels, file) 
-            != img->width * img->height * img->channels) {
-        fprintf(stderr, "Error reading image data\n");
-        free(img->data);
-        free(img);
-        fclose(file);
-        return NULL;
+
+    // Seed the random number generator
+    srand(time(NULL));
+
+    // Fill the image data with random values
+    for (int i = 0; i < width * height * img->channels; i++) {
+        img->data[i] = rand() % 256;
     }
-    
-    fclose(file);
+
     return img;
 }
 
@@ -260,18 +280,21 @@ void init_framebuffer() {
         fprintf(stderr, "Framebuffer is not complete!\n");
         exit(EXIT_FAILURE);
     }
+    
+    // Unbind framebuffer to return to default
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-// Initialize texture with the loaded image
-void init_texture(const char* image_path) {
-    // Load the image
-    Image* img = load_ppm(image_path);
+// Initialize texture with the generated image
+void init_texture() {
+    // Generate a random image
+    Image* img = generate_random_image(WINDOW_WIDTH, WINDOW_HEIGHT);
     if (!img) {
-        fprintf(stderr, "Failed to load image: %s\n", image_path);
+        fprintf(stderr, "Failed to generate random image\n");
         exit(EXIT_FAILURE);
     }
     
-    printf("Loaded image: %dx%d with %d channels\n", img->width, img->height, img->channels);
+    printf("Generated random image: %dx%d with %d channels\n", img->width, img->height, img->channels);
     
     // Convert to RGBA if needed
     unsigned char* rgba_data = convert_rgb_to_rgba(img);
@@ -316,80 +339,172 @@ void init_geometry() {
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 }
 
-// Initialize EGL for offscreen rendering
-void init_egl_offscreen() {
-    // Get default EGL display
-    egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (egl_display == EGL_NO_DISPLAY) {
-        fprintf(stderr, "Failed to get EGL display\n");
+// Initialize Wayland display
+void init_wayland() {
+    wl_display = wl_display_connect(NULL);
+    if (!wl_display) {
+        fprintf(stderr, "Failed to connect to Wayland display\n");
+        exit(EXIT_FAILURE);
+    }
+    struct wl_registry *registry = wl_display_get_registry(wl_display);
+    wl_registry_add_listener(registry, &registry_listener, NULL);
+    wl_display_roundtrip(wl_display);
+    wl_surface = wl_compositor_create_surface(compositor);
+    shell_surface = wl_shell_get_shell_surface(shell, wl_surface);
+    wl_shell_surface_set_toplevel(shell_surface);
+    wl_egl_window = wl_egl_window_create(wl_surface, WINDOW_WIDTH, WINDOW_HEIGHT);
+}
+
+// Initialize X11 display
+void init_x11() {
+    x_display = XOpenDisplay(NULL);
+    if (!x_display) {
+        fprintf(stderr, "Failed to open X11 display\n");
         exit(EXIT_FAILURE);
     }
     
-    // Initialize EGL
-    EGLint major, minor;
-    if (!eglInitialize(egl_display, &major, &minor)) {
-        fprintf(stderr, "Failed to initialize EGL\n");
-        exit(EXIT_FAILURE);
-    }
+    // Get the default screen
+    int screen = DefaultScreen(x_display);
     
-    printf("EGL version: %d.%d\n", major, minor);
+    // Get a visual
+    XVisualInfo visual_template;
+    visual_template.visualid = XVisualIDFromVisual(DefaultVisual(x_display, screen));
+    int num_visuals;
+    x_visual_info = XGetVisualInfo(x_display, VisualIDMask, &visual_template, &num_visuals);
     
-    // Set up EGL configuration
-    EGLint config_attribs[] = {
-        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+    // Create color map
+    x_colormap = XCreateColormap(x_display, RootWindow(x_display, screen),
+                               x_visual_info->visual, AllocNone);
+    
+    // Set window attributes
+    XSetWindowAttributes window_attrs;
+    window_attrs.colormap = x_colormap;
+    window_attrs.background_pixel = 0;
+    window_attrs.border_pixel = 0;
+    window_attrs.event_mask = ExposureMask | KeyPressMask;
+    
+    // Create window
+    x_window = XCreateWindow(x_display, RootWindow(x_display, screen),
+                          0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0,
+                          x_visual_info->depth, InputOutput,
+                          x_visual_info->visual,
+                          CWBorderPixel | CWColormap | CWEventMask,
+                          &window_attrs);
+    
+    // Set window name
+    XStoreName(x_display, x_window, "EGL Scaling Demo");
+    
+    // Show window
+    XMapWindow(x_display, x_window);
+    XFlush(x_display);
+}
+
+// Initialize EGL for Wayland
+void init_egl_wayland() {
+    static const EGLint config_attribs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
         EGL_RED_SIZE, 8,
         EGL_GREEN_SIZE, 8,
         EGL_BLUE_SIZE, 8,
         EGL_ALPHA_SIZE, 8,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_NONE
     };
     
-    EGLint num_configs;
-    if (!eglChooseConfig(egl_display, config_attribs, &egl_config, 1, &num_configs)) {
-        fprintf(stderr, "Failed to choose EGL config\n");
-        exit(EXIT_FAILURE);
-    }
-    
-    // Create a minimal pbuffer surface
-    EGLint pbuffer_attribs[] = {
-        EGL_WIDTH, 1,
-        EGL_HEIGHT, 1,
-        EGL_NONE
-    };
-    
-    egl_surface = eglCreatePbufferSurface(egl_display, egl_config, pbuffer_attribs);
-    if (egl_surface == EGL_NO_SURFACE) {
-        fprintf(stderr, "Failed to create EGL surface\n");
-        exit(EXIT_FAILURE);
-    }
-    
-    // Bind OpenGL ES API
-    eglBindAPI(EGL_OPENGL_ES_API);
-    
-    // Create EGL context
-    EGLint context_attribs[] = {
+    static const EGLint context_attribs[] = {
         EGL_CONTEXT_CLIENT_VERSION, 2,
         EGL_NONE
     };
     
+    egl_display = eglGetDisplay((EGLNativeDisplayType)wl_display);
+    eglInitialize(egl_display, NULL, NULL);
+    
+    EGLint num_configs;
+    eglChooseConfig(egl_display, config_attribs, &egl_config, 1, &num_configs);
+    eglBindAPI(EGL_OPENGL_ES_API);
     egl_context = eglCreateContext(egl_display, egl_config, EGL_NO_CONTEXT, context_attribs);
-    if (egl_context == EGL_NO_CONTEXT) {
-        fprintf(stderr, "Failed to create EGL context\n");
+    egl_surface = eglCreateWindowSurface(egl_display, egl_config, (EGLNativeWindowType)wl_egl_window, NULL);
+    eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);
+}
+
+// Initialize EGL for X11
+void init_egl_x11() {
+    static const EGLint config_attribs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_NONE
+    };
+    
+    static const EGLint context_attribs[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE
+    };
+    
+    egl_display = eglGetDisplay((EGLNativeDisplayType)x_display);
+    eglInitialize(egl_display, NULL, NULL);
+    
+    EGLint num_configs;
+    eglChooseConfig(egl_display, config_attribs, &egl_config, 1, &num_configs);
+    eglBindAPI(EGL_OPENGL_ES_API);
+    egl_context = eglCreateContext(egl_display, egl_config, EGL_NO_CONTEXT, context_attribs);
+    egl_surface = eglCreateWindowSurface(egl_display, egl_config, (EGLNativeWindowType)x_window, NULL);
+    eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);
+}
+
+void init_display() {
+    // Detect display server type
+    display_server_type = detect_display_server();
+    
+    // Initialize appropriate display server
+    switch (display_server_type) {
+        case DISPLAY_WAYLAND:
+            printf("Initializing Wayland display\n");
+            init_wayland();
+            init_egl_wayland();
+            break;
+            
+        case DISPLAY_X11:
+            printf("Initializing X11 display\n");
+            init_x11();
+            init_egl_x11();
+            break;
+            
+        default:
+            fprintf(stderr, "No supported display server available\n");
+            exit(EXIT_FAILURE);
+    }
+}
+
+void init_gl() {
+    // Initialize shaders
+    program = init_shaders();
+    if (!program) {
+        fprintf(stderr, "Failed to initialize shaders\n");
         exit(EXIT_FAILURE);
     }
     
-    // Make the context current
-    if (!eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context)) {
-        fprintf(stderr, "Failed to make EGL context current\n");
-        exit(EXIT_FAILURE);
-    }
+    // Initialize texture with generated image
+    init_texture();
     
-    printf("EGL initialized successfully for offscreen rendering\n");
+    // Initialize framebuffer for offscreen rendering
+    init_framebuffer();
+    
+    // Initialize geometry
+    init_geometry();
+    
+    // Set viewport to window dimensions
+    glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
 }
 
 // Function to perform a single scaling operation
 void perform_scaling() {
+    // Generate a new random image for each iteration
+    init_texture();
+
     // Bind to framebuffer for offscreen rendering
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     
@@ -428,9 +543,12 @@ void perform_scaling() {
     // Disable vertex attributes
     glDisableVertexAttribArray(pos_attrib);
     glDisableVertexAttribArray(tex_attrib);
+    
+    // Unbind framebuffer to return to default
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-// Function to perform multiple scaling operations and track performance
+// Function to perform 100 scaling operations and track performance
 void batch_scaling(const char* output_path) {
     printf("Starting batch scaling: %d iterations\n", SCALING_ITERATIONS);
     
@@ -444,6 +562,11 @@ void batch_scaling(const char* output_path) {
     // Perform scaling multiple times
     for (int i = 0; i < SCALING_ITERATIONS; i++) {
         perform_scaling();
+        
+        // Print progress every 10 iterations
+        if (i % 10 == 0) {
+            printf("Completed scaling iteration %d/%d\n", i, SCALING_ITERATIONS);
+        }
     }
     
     // End timing
@@ -451,12 +574,6 @@ void batch_scaling(const char* output_path) {
     cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
     printf("Batch scaling completed in %f seconds\n", cpu_time_used);
     printf("Average time per operation: %f seconds\n", cpu_time_used / SCALING_ITERATIONS);
-    
-    // If no output path specified, we're done
-    if (!output_path) {
-        printf("No output path specified, skipping save\n");
-        return;
-    }
     
     // Read back the final scaled image
     unsigned char* scaled_data = (unsigned char*)malloc(WINDOW_WIDTH * WINDOW_HEIGHT * 4);
@@ -471,11 +588,86 @@ void batch_scaling(const char* output_path) {
     // Read pixels
     glReadPixels(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, scaled_data);
     
+    // Unbind framebuffer
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    
     // Save the final scaled image
-    save_ppm(output_path, scaled_data, WINDOW_WIDTH, WINDOW_HEIGHT);
+    if (output_path) {
+        save_ppm(output_path, scaled_data, WINDOW_WIDTH, WINDOW_HEIGHT);
+    }
     
     // Free memory
     free(scaled_data);
+}
+
+void draw_frame() {
+    // Clear the color buffer
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    
+    // Use shader program
+    glUseProgram(program);
+    
+    // Bind VBO
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    
+    // Set position attribute
+    GLint pos_attrib = glGetAttribLocation(program, "position");
+    glEnableVertexAttribArray(pos_attrib);
+    glVertexAttribPointer(pos_attrib, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), 0);
+    
+    // Set texture coordinate attribute
+    GLint tex_attrib = glGetAttribLocation(program, "texcoord");
+    glEnableVertexAttribArray(tex_attrib);
+    glVertexAttribPointer(tex_attrib, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    
+    // After batch processing, display the result
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, output_texture);
+    GLint tex_uniform = glGetUniformLocation(program, "texture");
+    glUniform1i(tex_uniform, 0);
+    
+    // Draw the quad (as triangle strip)
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    
+    // Disable vertex attributes
+    glDisableVertexAttribArray(pos_attrib);
+    glDisableVertexAttribArray(tex_attrib);
+    
+    // Swap buffers
+    eglSwapBuffers(egl_display, egl_surface);
+}
+
+// Handle X11 events
+void handle_x11_events() {
+    XEvent xev;
+    while (XPending(x_display)) {
+        XNextEvent(x_display, &xev);
+        // Handle any relevant X11 events here
+    }
+}
+
+// Main event loop
+void run_event_loop() {
+    printf("Scaling completed. Displaying result. Press Ctrl+C to exit.\n");
+    while (1) {
+        // Handle events for the appropriate display server
+        switch (display_server_type) {
+            case DISPLAY_WAYLAND:
+                wl_display_dispatch_pending(wl_display);
+                break;
+                
+            case DISPLAY_X11:
+                handle_x11_events();
+                break;
+                
+            default:
+                // Should never reach here
+                break;
+        }
+        
+        draw_frame();
+    }
 }
 
 void cleanup() {
@@ -487,12 +679,34 @@ void cleanup() {
     glDeleteProgram(program);
     
     // Destroy EGL resources
-    eglMakeCurrent(egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroySurface(egl_display, egl_surface);
     eglDestroyContext(egl_display, egl_context);
     eglTerminate(egl_display);
     
-    printf("Resources cleaned up\n");
+    // Clean up display server resources
+    switch (display_server_type) {
+        case DISPLAY_WAYLAND:
+            // Destroy Wayland resources
+            wl_egl_window_destroy(wl_egl_window);
+            wl_shell_surface_destroy(shell_surface);
+            wl_surface_destroy(wl_surface);
+            wl_shell_destroy(shell);
+            wl_compositor_destroy(compositor);
+            wl_display_disconnect(wl_display);
+            break;
+            
+        case DISPLAY_X11:
+            // Destroy X11 resources
+            XFree(x_visual_info);
+            XFreeColormap(x_display, x_colormap);
+            XDestroyWindow(x_display, x_window);
+            XCloseDisplay(x_display);
+            break;
+            
+        default:
+            // Should never reach here
+            break;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -505,34 +719,20 @@ int main(int argc, char **argv) {
     const char* input_path = argv[1];
     const char* output_path = (argc == 3) ? argv[2] : NULL;
     
-    // Initialize EGL for offscreen rendering
-    init_egl_offscreen();
+    // Initialize display (Wayland or X11)
+    init_display();
     
-    // Initialize OpenGL resources
-    program = init_shaders();
-    if (!program) {
-        fprintf(stderr, "Failed to initialize shaders\n");
-        exit(EXIT_FAILURE);
-    }
-    
-    // Initialize texture with loaded image
-    init_texture(input_path);
-    
-    // Initialize framebuffer for offscreen rendering
-    init_framebuffer();
-    
-    // Initialize geometry
-    init_geometry();
-    
-    // Set viewport to target dimensions
-    glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+    // Initialize OpenGL and load the image
+    init_gl();
     
     // Perform batch scaling operations and measure performance
     batch_scaling(output_path);
     
-    // Clean up resources
+    // Enter the main event loop to display the result
+    run_event_loop();
+    
+    // Clean up resources (this will only be reached if run_event_loop() exits)
     cleanup();
     
-    printf("Offscreen rendering completed successfully\n");
     return EXIT_SUCCESS;
 }
