@@ -1141,6 +1141,8 @@ void render_loop() {
         if (elapsed < frame_duration) {
             usleep((frame_duration - elapsed) * 1000000);  // Dynamic sleep based on frame rate
         }
+
+        running = 0;
     }
 }
 
