@@ -1076,7 +1076,6 @@ void render_loop() {
         frame_size = get_next_frame(&frame);
         if (frame_size < 0) {
             fprintf(stderr, "Failed to get next frame\n");
-            running = 0;
             break;
         }
 
