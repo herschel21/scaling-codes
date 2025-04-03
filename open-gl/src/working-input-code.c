@@ -20,8 +20,8 @@
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
 
-#define WINDOW_WIDTH  640
-#define WINDOW_HEIGHT 480
+#define WINDOW_WIDTH  1920
+#define WINDOW_HEIGHT 1080
 #define BUFFER_COUNT  4
 #define FRAME_BUFFER_SIZE 100
 #define STRINGIFY(x) #x
