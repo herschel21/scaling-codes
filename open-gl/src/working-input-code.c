@@ -725,10 +725,11 @@ void init_video_texture() {
 // Geometry initialization (unchanged)
 void init_geometry() {
     float vertices[] = {
-        -1.0f, -1.0f, 0.0f,  1.0f, 1.0f,
-        1.0f, -1.0f, 0.0f,   0.0f, 1.0f,
-        -1.0f,  1.0f, 0.0f,  1.0f, 0.0f,
-        1.0f,  1.0f, 0.0f,   0.0f, 0.0f
+        // Position      // Texcoords
+        -1.0f, -1.0f, 0.0f,  0.0f, 1.0f, // Bottom-left
+        1.0f, -1.0f, 0.0f,   1.0f, 1.0f, // Bottom-right
+        -1.0f,  1.0f, 0.0f,  0.0f, 0.0f, // Top-left
+        1.0f,  1.0f, 0.0f,   1.0f, 0.0f  // Top-right
     };
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
