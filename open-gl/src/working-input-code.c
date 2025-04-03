@@ -1076,6 +1076,7 @@ void render_loop() {
         frame_size = get_next_frame(&frame);
         if (frame_size < 0) {
             fprintf(stderr, "Failed to get next frame\n");
+            running = 0;
             break;
         }
 
@@ -1141,8 +1142,6 @@ void render_loop() {
         if (elapsed < frame_duration) {
             usleep((frame_duration - elapsed) * 1000000);  // Dynamic sleep based on frame rate
         }
-
-        running = 0;
     }
 }
 
