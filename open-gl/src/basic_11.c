@@ -750,13 +750,12 @@ void init_geometry() {
     // Position (x,y,z) and texture coordinates (s,t)
     float vertices[] = {
         // Position      // Texcoords
-        -1.0f, -1.0f, 0.0f,  0.0f, 0.0f, // Bottom-left
-        1.0f, -1.0f, 0.0f,   1.0f, 0.0f, // Bottom-right
-        -1.0f,  1.0f, 0.0f,  0.0f, 1.0f, // Top-left
-        1.0f,  1.0f, 0.0f,   1.0f, 1.0f  // Top-right
+        -1.0f, -1.0f, 0.0f,  1.0f, 1.0f, // Bottom-left
+        1.0f, -1.0f, 0.0f,   0.0f, 1.0f, // Bottom-right
+        -1.0f,  1.0f, 0.0f,  1.0f, 0.0f, // Top-left
+        1.0f,  1.0f, 0.0f,   0.0f, 0.0f  // Top-right
     };
-
-    // Create and bind a buffer for the vertices
+// Create and bind a buffer for the vertices
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
