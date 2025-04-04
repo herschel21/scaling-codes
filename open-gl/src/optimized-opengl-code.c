@@ -505,11 +505,19 @@ void cleanup_video_source() {
     if (format_context) avformat_close_input(&format_context);
     if (sws_context) sws_freeContext(sws_context);
     if (rgb_buffer) av_free(rgb_buffer);
-    for (int i = 0; i < FRAME_BUFFER_SIZE; i++) {
-        if (frame_buffer[i].data) free(frame_buffer[i].data);
-    }
-}
 
+    // Only free remaining frames in the buffer
+    pthread_mutex_lock(&buffer_mutex);
+    while (frame_buffer_count > 0) {
+        if (frame_buffer[frame_buffer_head].data) {
+            free(frame_buffer[frame_buffer_head].data);
+            frame_buffer[frame_buffer_head].data = NULL; // Clear the pointer
+        }
+        frame_buffer_head = (frame_buffer_head + 1) % FRAME_BUFFER_SIZE;
+        frame_buffer_count--;
+    }
+    pthread_mutex_unlock(&buffer_mutex);
+}
 void cleanup_display() {
     printf("DEBUG: Cleaning up display\n");
     if (egl_display != EGL_NO_DISPLAY) {
