@@ -9,8 +9,10 @@
 #include <unistd.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
-#include <gst/gst.h>
-#include <gst/app/gstappsink.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
 
 #define TARGET_FPS 60
 #define FRAME_DURATION (1.0 / TARGET_FPS) // 16.67ms
@@ -22,10 +24,17 @@ typedef enum { DISPLAY_WAYLAND, DISPLAY_X11, DISPLAY_UNKNOWN } DisplayServerType
 
 DisplayServerType display_server_type = DISPLAY_UNKNOWN;
 
-// GStreamer globals
-GstElement *pipeline, *filesrc, *demuxer, *decoder, *converter, *appsink;
-GstBus *bus;
-int video_width = 0, video_height = 0;
+// Video decoding globals
+AVFormatContext* format_context = NULL;
+AVCodecContext* codec_context = NULL;
+AVFrame* av_frame = NULL;
+AVFrame* rgba_frame = NULL;
+AVPacket* packet = NULL;
+struct SwsContext* sws_context = NULL;
+int video_stream_index = -1;
+uint8_t* rgb_buffer = NULL;
+int rgb_buffer_size = 0;
+int frame_width = 0, frame_height = 0;
 
 // Display globals
 struct wl_display *wl_display;
@@ -121,121 +130,91 @@ DisplayServerType detect_display_server() {
     return DISPLAY_UNKNOWN;
 }
 
-// GStreamer callbacks
-static void on_pad_added(GstElement *element, GstPad *pad, gpointer data) {
-    GstPad *sinkpad = gst_element_get_static_pad(decoder, "sink");
-    if (gst_pad_link(pad, sinkpad) != GST_PAD_LINK_OK) {
-        printf("DEBUG: Failed to link demuxer to decoder\n");
-    }
-    gst_object_unref(sinkpad);
-}
-
-static void on_eos(GstBus *bus, GstMessage *msg, gpointer data) {
-    printf("DEBUG: End of stream reached\n");
-    decoding_done = 1;
-}
-
-static void on_error(GstBus *bus, GstMessage *msg, gpointer data) {
-    GError *err;
-    gst_message_parse_error(msg, &err, NULL);
-    printf("DEBUG: GStreamer error: %s\n", err->message);
-    g_error_free(err);
-    running = 0;
-}
-
-static GstFlowReturn on_new_sample(GstAppSink *sink, gpointer user_data) {
-    GstSample *sample = gst_app_sink_pull_sample(GST_APP_SINK(sink));
-    if (!sample) {
-        printf("DEBUG: No sample available, possibly EOS\n");
-        decoding_done = 1;
-        return GST_FLOW_EOS;
-    }
-
-    GstBuffer *buffer = gst_sample_get_buffer(sample);
-    GstMapInfo map;
-    gst_buffer_map(buffer, &map, GST_MAP_READ);
-
-    pthread_mutex_lock(&buffer_mutex);
-    while (frame_buffer_count >= FRAME_BUFFER_SIZE && running) {
-        printf("DEBUG: Buffer full, waiting\n");
-        pthread_cond_wait(&buffer_cond, &buffer_mutex);
-    }
-    if (!running) {
-        pthread_mutex_unlock(&buffer_mutex);
-        gst_buffer_unmap(buffer, &map);
-        gst_sample_unref(sample);
-        return GST_FLOW_OK;
-    }
-
-    frame_buffer[frame_buffer_tail].data = malloc(map.size);
-    memcpy(frame_buffer[frame_buffer_tail].data, map.data, map.size);
-    frame_buffer[frame_buffer_tail].size = map.size;
-    frame_buffer_tail = (frame_buffer_tail + 1) % FRAME_BUFFER_SIZE;
-    frame_buffer_count++;
-    printf("DEBUG: Frame decoded and buffered - count: %d\n", frame_buffer_count);
-    pthread_cond_signal(&buffer_cond);
-    pthread_mutex_unlock(&buffer_mutex);
-
-    gst_buffer_unmap(buffer, &map);
-    gst_sample_unref(sample);
-    return GST_FLOW_OK;
-}
-
-// Initialize GStreamer pipeline
-int init_gstreamer_decoder(const char *filename) {
-    gst_init(NULL, NULL);
-
-    pipeline = gst_pipeline_new("decoder-pipeline");
-    filesrc = gst_element_factory_make("filesrc", "source");
-    demuxer = gst_element_factory_make("qtdemux", "demuxer");
-    decoder = gst_element_factory_make("vpudec", "decoder");
-    converter = gst_element_factory_make("videoconvert", "converter");
-    appsink = gst_element_factory_make("appsink", "sink");
-
-    if (!pipeline || !filesrc || !demuxer || !decoder || !converter || !appsink) {
-        printf("DEBUG: Failed to create GStreamer elements\n");
+// Initialize MP4
+int init_mp4_file(const char* filename) {
+    printf("DEBUG: Initializing MP4 file: %s\n", filename);
+    int ret = avformat_open_input(&format_context, filename, NULL, NULL);
+    if (ret < 0) {
+        fprintf(stderr, "DEBUG: Failed to open MP4 file\n");
         return -1;
     }
 
-    g_object_set(G_OBJECT(filesrc), "location", filename, NULL);
-    g_object_set(G_OBJECT(appsink), "emit-signals", TRUE, "sync", FALSE, NULL);
-    g_signal_connect(appsink, "new-sample", G_CALLBACK(on_new_sample), NULL);
-    g_signal_connect(demuxer, "pad-added", G_CALLBACK(on_pad_added), NULL);
+    avformat_find_stream_info(format_context, NULL);
+    for (int i = 0; i < format_context->nb_streams; i++) {
+        if (format_context->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            video_stream_index = i;
+            printf("DEBUG: Video stream found at index: %d\n", i);
+            break;
+        }
+    }
+    if (video_stream_index == -1) return -1;
 
-    gst_bin_add_many(GST_BIN(pipeline), filesrc, demuxer, decoder, converter, appsink, NULL);
-    gst_element_link(filesrc, demuxer);
-    gst_element_link(decoder, converter);
-    gst_element_link(converter, appsink);
+    const AVCodec* codec = avcodec_find_decoder(format_context->streams[video_stream_index]->codecpar->codec_id);
+    codec_context = avcodec_alloc_context3(codec);
+    avcodec_parameters_to_context(codec_context, format_context->streams[video_stream_index]->codecpar);
+    ret = avcodec_open2(codec_context, codec, NULL);
+    if (ret < 0) return -1;
 
-    bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
-    gst_bus_add_signal_watch(bus);
-    g_signal_connect(bus, "message::eos", G_CALLBACK(on_eos), NULL);
-    g_signal_connect(bus, "message::error", G_CALLBACK(on_error), NULL);
+    av_frame = av_frame_alloc();
+    rgba_frame = av_frame_alloc();
+    if (!av_frame || !rgba_frame) return -1;
 
-    // Request RGBA output
-    GstCaps *caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "RGBA", NULL);
-    gst_app_sink_set_caps(GST_APP_SINK(appsink), caps);
-    gst_caps_unref(caps);
+    frame_width = codec_context->width;
+    frame_height = codec_context->height;
+    rgb_buffer_size = av_image_get_buffer_size(AV_PIX_FMT_RGBA, frame_width, frame_height, 1);
+    rgb_buffer = av_malloc(rgb_buffer_size);
+    av_image_fill_arrays(rgba_frame->data, rgba_frame->linesize, rgb_buffer, AV_PIX_FMT_RGBA, frame_width, frame_height, 1);
 
-    // Get video dimensions (optional, for texture setup)
-    // This could be improved by querying caps after pipeline starts
-    video_width = WINDOW_WIDTH;  // Placeholder, adjust as needed
-    video_height = WINDOW_HEIGHT;
+    sws_context = sws_getContext(frame_width, frame_height, codec_context->pix_fmt,
+                                 frame_width, frame_height, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
+    if (!sws_context) return -1;
 
-    printf("DEBUG: GStreamer pipeline initialized\n");
+    packet = av_packet_alloc();
+    if (!packet) return -1;
+
+    printf("DEBUG: MP4 initialized - %dx%d\n", frame_width, frame_height);
     return 0;
 }
 
 // Decoding thread
 void* decode_thread_func(void* arg) {
-    printf("DEBUG: Starting GStreamer decode thread\n");
-    gst_element_set_state(pipeline, GST_STATE_PLAYING);
-
+    printf("DEBUG: Starting decode thread\n");
     while (running && !decoding_done) {
-        g_usleep(10000); // 10ms sleep to avoid busy-waiting
-    }
+        pthread_mutex_lock(&buffer_mutex);
+        while (frame_buffer_count >= FRAME_BUFFER_SIZE && running) {
+            printf("DEBUG: Buffer full, waiting\n");
+            pthread_cond_wait(&buffer_cond, &buffer_mutex);
+        }
+        pthread_mutex_unlock(&buffer_mutex);
 
-    gst_element_set_state(pipeline, GST_STATE_NULL);
+        if (!running) break;
+
+        int ret = av_read_frame(format_context, packet);
+        if (ret < 0) {
+            printf("DEBUG: End of video reached\n");
+            decoding_done = 1;
+            break;
+        }
+
+        if (packet->stream_index == video_stream_index) {
+            avcodec_send_packet(codec_context, packet);
+            if (avcodec_receive_frame(codec_context, av_frame) == 0) {
+                sws_scale(sws_context, (const uint8_t* const*)av_frame->data, av_frame->linesize, 0,
+                          codec_context->height, rgba_frame->data, rgba_frame->linesize);
+
+                pthread_mutex_lock(&buffer_mutex);
+                frame_buffer[frame_buffer_tail].data = malloc(rgb_buffer_size);
+                memcpy(frame_buffer[frame_buffer_tail].data, rgb_buffer, rgb_buffer_size);
+                frame_buffer[frame_buffer_tail].size = rgb_buffer_size;
+                frame_buffer_tail = (frame_buffer_tail + 1) % FRAME_BUFFER_SIZE;
+                frame_buffer_count++;
+                printf("DEBUG: Frame decoded and buffered - count: %d\n", frame_buffer_count);
+                pthread_cond_signal(&buffer_cond);
+                pthread_mutex_unlock(&buffer_mutex);
+            }
+        }
+        av_packet_unref(packet);
+    }
     printf("DEBUG: Decode thread exiting\n");
     return NULL;
 }
@@ -301,15 +280,32 @@ GLuint init_shaders() {
     return program;
 }
 
-// Initialize geometry
+// Initialize geometry with scaling
 void init_geometry() {
-    printf("DEBUG: Initializing geometry\n");
+    printf("DEBUG: Initializing geometry with scaling\n");
+    // Calculate scaling factors based on video and window aspect ratios
+    float video_aspect = (float)frame_width / frame_height;
+    float window_aspect = (float)WINDOW_WIDTH / WINDOW_HEIGHT;
+    float scaled_width, scaled_height;
+
+    if (video_aspect > window_aspect) {
+        // Video is wider than window: fit width, scale height
+        scaled_width = 1.0f;  // Full width in normalized device coordinates (-1 to 1)
+        scaled_height = window_aspect / video_aspect;
+    } else {
+        // Video is taller than window: fit height, scale width
+        scaled_width = video_aspect / window_aspect;
+        scaled_height = 1.0f;  // Full height in normalized device coordinates (-1 to 1)
+    }
+
+    // Define quad vertices with scaled dimensions
     float vertices[] = {
-        -1.0f, -1.0f, 0.0f,  0.0f, 1.0f,
-         1.0f, -1.0f, 0.0f,  1.0f, 1.0f,
-        -1.0f,  1.0f, 0.0f,  0.0f, 0.0f,
-         1.0f,  1.0f, 0.0f,  1.0f, 0.0f
+        -scaled_width, -scaled_height, 0.0f,  0.0f, 1.0f,  // Bottom-left
+         scaled_width, -scaled_height, 0.0f,  1.0f, 1.0f,  // Bottom-right
+        -scaled_width,  scaled_height, 0.0f,  0.0f, 0.0f,  // Top-left
+         scaled_width,  scaled_height, 0.0f,  1.0f, 0.0f   // Top-right
     };
+
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
@@ -320,11 +316,11 @@ void init_video_texture() {
     printf("DEBUG: Initializing video texture\n");
     glGenTextures(1, &texture_id);
     glBindTexture(GL_TEXTURE_2D, texture_id);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);  // Smooth downscaling
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);  // Smooth upscaling
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, video_width, video_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, frame_width, frame_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 }
 
 // Initialize Wayland
@@ -425,7 +421,7 @@ int init_egl() {
     return 0;
 }
 
-// Render loop
+// Render loop with corrected FPS calculation and background clearing
 void render_loop() {
     printf("DEBUG: Starting render loop\n");
     struct timespec start_time, end_time, loop_start_time, loop_end_time;
@@ -440,6 +436,8 @@ void render_loop() {
     GLint tex_attrib = glGetAttribLocation(program, "texcoord");
     GLint tex_uniform = glGetUniformLocation(program, "texture");
     glUniform1i(tex_uniform, 0);
+
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);  // Set background to black for letterboxing
 
     while (running) {
         clock_gettime(CLOCK_MONOTONIC, &start_time);
@@ -465,11 +463,11 @@ void render_loop() {
         }
 
         glBindTexture(GL_TEXTURE_2D, texture_id);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, video_width, video_height, GL_RGBA, GL_UNSIGNED_BYTE, frame);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frame_width, frame_height, GL_RGBA, GL_UNSIGNED_BYTE, frame);
         free(frame);
         printf("DEBUG: Texture updated\n");
 
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT);  // Clear to black before rendering
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
         glEnableVertexAttribArray(pos_attrib);
         glVertexAttribPointer(pos_attrib, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), 0);
@@ -514,14 +512,18 @@ void render_loop() {
 }
 
 // Cleanup functions
-void cleanup_gstreamer() {
-    printf("DEBUG: Cleaning up GStreamer\n");
-    if (pipeline) {
-        gst_element_set_state(pipeline, GST_STATE_NULL);
-        gst_object_unref(pipeline);
+void cleanup_video_source() {
+    printf("DEBUG: Cleaning up video source\n");
+    if (packet) av_packet_free(&packet);
+    if (rgba_frame) av_frame_free(&rgba_frame);
+    if (av_frame) av_frame_free(&av_frame);
+    if (codec_context) {
+        avcodec_close(codec_context);
+        avcodec_free_context(&codec_context);
     }
-    if (bus) gst_object_unref(bus);
-    gst_deinit();
+    if (format_context) avformat_close_input(&format_context);
+    if (sws_context) sws_freeContext(sws_context);
+    if (rgb_buffer) av_free(rgb_buffer);
 
     pthread_mutex_lock(&buffer_mutex);
     while (frame_buffer_count > 0) {
@@ -573,43 +575,43 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    if (init_gstreamer_decoder(argv[1]) < 0) {
-        fprintf(stderr, "DEBUG: Failed to initialize GStreamer\n");
+    if (init_mp4_file(argv[1]) < 0) {
+        fprintf(stderr, "DEBUG: Failed to open MP4 file\n");
         return EXIT_FAILURE;
     }
 
     display_server_type = detect_display_server();
     if (display_server_type == DISPLAY_UNKNOWN) {
-        cleanup_gstreamer();
+        cleanup_video_source();
         return EXIT_FAILURE;
     }
 
     if (display_server_type == DISPLAY_WAYLAND) {
         if (init_wayland() < 0) {
-            cleanup_gstreamer();
+            cleanup_video_source();
             return EXIT_FAILURE;
         }
     } else if (display_server_type == DISPLAY_X11) {
         if (init_x11() < 0) {
-            cleanup_gstreamer();
+            cleanup_video_source();
             return EXIT_FAILURE;
         }
     }
 
     if (init_egl() < 0) {
-        cleanup_gstreamer();
+        cleanup_video_source();
         cleanup_display();
         return EXIT_FAILURE;
     }
 
     program = init_shaders();
     if (!program) {
-        cleanup_gstreamer();
+        cleanup_video_source();
         cleanup_display();
         return EXIT_FAILURE;
     }
 
-    init_geometry();
+    init_geometry();  // Now scales based on frame_width and frame_height
     init_video_texture();
 
     pthread_create(&decode_thread, NULL, decode_thread_func, NULL);
@@ -618,7 +620,7 @@ int main(int argc, char *argv[]) {
     running = 0;
     pthread_join(decode_thread, NULL);
     cleanup_gl();
-    cleanup_gstreamer();
+    cleanup_video_source();
     cleanup_display();
 
     printf("DEBUG: Program terminated\n");
