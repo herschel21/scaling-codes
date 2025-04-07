@@ -121,6 +121,7 @@ DisplayServerType detect_display_server() {
 }
 
 // Initialize GStreamer pipeline
+// Initialize GStreamer pipeline
 int init_gstreamer(const char* filename) {
     GError *error = NULL;
     char pipeline_str[512];
@@ -128,6 +129,7 @@ int init_gstreamer(const char* filename) {
              "filesrc location=%s ! qtdemux ! h264parse ! vpudec ! videoconvert ! video/x-raw,format=RGBA ! appsink name=sink",
              filename);
 
+    printf("DEBUG: Pipeline string: %s\n", pipeline_str);
     pipeline = gst_parse_launch(pipeline_str, &error);
     if (error || !pipeline) {
         fprintf(stderr, "ERROR: Failed to create pipeline: %s\n", error ? error->message : "Unknown error");
@@ -142,36 +144,68 @@ int init_gstreamer(const char* filename) {
         return -1;
     }
 
-    // Get video dimensions
-    GstCaps *caps = gst_app_sink_get_caps(GST_APP_SINK(appsink));
-    if (caps) {
-        GstStructure *structure = gst_caps_get_structure(caps, 0);
-        gst_structure_get_int(structure, "width", &frame_width);
-        gst_structure_get_int(structure, "height", &frame_height);
-        printf("DEBUG: Video resolution: %dx%d\n", frame_width, frame_height);
-        gst_caps_unref(caps);
-    } else {
-        // Fallback: Set state to PAUSED to negotiate caps
-        gst_element_set_state(pipeline, GST_STATE_PAUSED);
-        GstPad *sink_pad = gst_element_get_static_pad(appsink, "sink");
-        caps = gst_pad_get_current_caps(sink_pad);
-        if (caps) {
-            GstStructure *structure = gst_caps_get_structure(caps, 0);
-            gst_structure_get_int(structure, "width", &frame_width);
-            gst_structure_get_int(structure, "height", &frame_height);
-            printf("DEBUG: Video resolution from pad: %dx%d\n", frame_width, frame_height);
-            gst_caps_unref(caps);
-        } else {
-            fprintf(stderr, "ERROR: Failed to get video caps\n");
-            gst_object_unref(sink_pad);
-            gst_object_unref(appsink);
-            gst_object_unref(pipeline);
-            return -1;
-        }
-        gst_object_unref(sink_pad);
+    // Try setting to PAUSED first to negotiate caps
+    printf("DEBUG: Setting pipeline to PAUSED to negotiate caps\n");
+    GstStateChangeReturn ret = gst_element_set_state(pipeline, GST_STATE_PAUSED);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        fprintf(stderr, "ERROR: Failed to set pipeline to PAUSED\n");
+        gst_object_unref(appsink);
+        gst_object_unref(pipeline);
+        return -1;
     }
 
-    gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    // Wait for caps to be available
+    GstCaps *caps = NULL;
+    GstPad *sink_pad = gst_element_get_static_pad(appsink, "sink");
+    if (!sink_pad) {
+        fprintf(stderr, "ERROR: Failed to get appsink sink pad\n");
+        gst_object_unref(appsink);
+        gst_object_unref(pipeline);
+        return -1;
+    }
+
+    int attempts = 10; // Try up to 10 times, 100ms apart
+    for (int i = 0; i < attempts && !caps && running; i++) {
+        caps = gst_pad_get_current_caps(sink_pad);
+        if (!caps) {
+            printf("DEBUG: Caps not available yet, attempt %d/%d\n", i + 1, attempts);
+            usleep(100000); // Wait 100ms
+            gst_element_sync_state_with_parent(appsink); // Ensure sync
+        }
+    }
+
+    if (!caps) {
+        fprintf(stderr, "ERROR: Failed to get video caps after %d attempts\n", attempts);
+        gst_object_unref(sink_pad);
+        gst_object_unref(appsink);
+        gst_object_unref(pipeline);
+        return -1;
+    }
+
+    GstStructure *structure = gst_caps_get_structure(caps, 0);
+    if (!gst_structure_get_int(structure, "width", &frame_width) ||
+        !gst_structure_get_int(structure, "height", &frame_height)) {
+        fprintf(stderr, "ERROR: Failed to extract width/height from caps\n");
+        gst_caps_unref(caps);
+        gst_object_unref(sink_pad);
+        gst_object_unref(appsink);
+        gst_object_unref(pipeline);
+        return -1;
+    }
+    printf("DEBUG: Video resolution: %dx%d\n", frame_width, frame_height);
+    gst_caps_unref(caps);
+    gst_object_unref(sink_pad);
+
+    // Now set to PLAYING
+    printf("DEBUG: Setting pipeline to PLAYING\n");
+    ret = gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    if (ret == GST_STATE_CHANGE_FAILURE) {
+        fprintf(stderr, "ERROR: Failed to set pipeline to PLAYING\n");
+        gst_object_unref(appsink);
+        gst_object_unref(pipeline);
+        return -1;
+    }
+
     printf("DEBUG: GStreamer pipeline initialized\n");
     return 0;
 }
