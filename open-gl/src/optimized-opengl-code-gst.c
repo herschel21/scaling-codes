@@ -125,7 +125,7 @@ int init_gstreamer(const char* filename) {
     GError *error = NULL;
     char pipeline_str[512];
     snprintf(pipeline_str, sizeof(pipeline_str),
-             "filesrc location=%s ! qtdemux ! h264parse ! imxvpudec ! videoconvert ! video/x-raw,format=RGBA ! appsink name=sink",
+             "filesrc location=%s ! qtdemux ! h264parse ! vpudec ! videoconvert ! video/x-raw,format=RGBA ! appsink name=sink",
              filename);
 
     pipeline = gst_parse_launch(pipeline_str, &error);
