@@ -151,10 +151,24 @@ int init_gstreamer(const char* filename) {
         printf("DEBUG: Video resolution: %dx%d\n", frame_width, frame_height);
         gst_caps_unref(caps);
     } else {
-        fprintf(stderr, "ERROR: Failed to get video caps\n");
-        gst_object_unref(appsink);
-        gst_object_unref(pipeline);
-        return -1;
+        // Fallback: Set state to PAUSED to negotiate caps
+        gst_element_set_state(pipeline, GST_STATE_PAUSED);
+        GstPad *sink_pad = gst_element_get_static_pad(appsink, "sink");
+        caps = gst_pad_get_current_caps(sink_pad);
+        if (caps) {
+            GstStructure *structure = gst_caps_get_structure(caps, 0);
+            gst_structure_get_int(structure, "width", &frame_width);
+            gst_structure_get_int(structure, "height", &frame_height);
+            printf("DEBUG: Video resolution from pad: %dx%d\n", frame_width, frame_height);
+            gst_caps_unref(caps);
+        } else {
+            fprintf(stderr, "ERROR: Failed to get video caps\n");
+            gst_object_unref(sink_pad);
+            gst_object_unref(appsink);
+            gst_object_unref(pipeline);
+            return -1;
+        }
+        gst_object_unref(sink_pad);
     }
 
     gst_element_set_state(pipeline, GST_STATE_PLAYING);
