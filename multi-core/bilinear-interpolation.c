@@ -125,7 +125,6 @@ int main(int argc, char* argv[]) {
     // Perform read, scale, and write operations multiple times
     #pragma omp parallel for
     for (int i = 0; i < MAX_ITERATIONS; i++) {
-        printf("Iteration %d\n", i + 1);
         scaleResolutionBilinear(&srcRes, &dstRes);
         writeResolution(&dstRes, destMemory);
     }

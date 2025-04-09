@@ -146,7 +146,6 @@ int main(int argc, char* argv[]) {
     // Perform repeated scaling and write
     #pragma omp parallel for
     for (int i = 0; i < MAX_ITERATIONS; i++) {
-        printf("Iteration %d\n", i + 1);
         scaleResolutionBicubic(&srcRes, &dstRes);
         writeResolution(&dstRes, destMemory);
     }
