@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# List of input resolutions
+resolutions=(
+  "640 480"
+  "800 600"
+  "1024 768"
+  "1152 864"
+  "1366 768"
+  "1280 800"
+  "1280 1024"
+  "1440 900"
+  "1600 1200"
+  "1920 1080"
+)
+
+# Path to the compiled binary
+binary="./nearest-neighbour"
+
+# Check if the binary exists
+if [ ! -f "$binary" ]; then
+  echo "Error: $binary not found. Please compile it first."
+  exit 1
+fi
+
+# Run the binary with each resolution
+for res in "${resolutions[@]}"; do
+  echo "Running with input resolution: $res"
+  $binary $res
+  echo "-----------------------------------------------------"
+done
+
