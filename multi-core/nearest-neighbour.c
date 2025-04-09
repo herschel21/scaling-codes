@@ -5,10 +5,8 @@
 #include <omp.h>
 
 #define MAX_ITERATIONS 100
-#define SRC_WIDTH 640
-#define SRC_HEIGHT 480
-#define DST_WIDTH 1024
-#define DST_HEIGHT 768
+#define DST_WIDTH 1920
+#define DST_HEIGHT 1080
 #define PIXEL_SIZE 4  // Assuming 4 bytes per pixel (RGBA)
 
 typedef struct {
@@ -18,10 +16,10 @@ typedef struct {
 } Resolution;
 
 // Function to initialize and fill source resolution data once
-Resolution initResolution() {
+Resolution initResolution(int width, int height) {
     Resolution res;
-    res.width = SRC_WIDTH;
-    res.height = SRC_HEIGHT;
+    res.width = width;
+    res.height = height;
 
     size_t dataSize = res.width * res.height * PIXEL_SIZE;
     res.data = (unsigned char*)malloc(dataSize);
@@ -54,7 +52,6 @@ void scaleResolution(Resolution* src, Resolution* dst) {
             int srcIndex = (srcY * src->width + srcX) * PIXEL_SIZE;
             int dstIndex = (y * dst->width + x) * PIXEL_SIZE;
 
-            // Copy RGBA values from the nearest pixel
             memcpy(&dst->data[dstIndex], &src->data[srcIndex], PIXEL_SIZE);
         }
     }
@@ -66,19 +63,31 @@ void writeResolution(Resolution* res, unsigned char* destMemory) {
     memcpy(destMemory, res->data, dataSize);
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc != 3) {
+        printf("Usage: %s <source_width> <source_height>\n", argv[0]);
+        return 1;
+    }
 
-    // Allocate and initialize source resolution once
-    Resolution srcRes = initResolution();
+    int src_width = atoi(argv[1]);
+    int src_height = atoi(argv[2]);
+
+    if (src_width <= 0 || src_height <= 0) {
+        printf("Invalid source resolution.\n");
+        return 1;
+    }
+
+    // Allocate and initialize source resolution
+    Resolution srcRes = initResolution(src_width, src_height);
 
     // Start measuring time
     double start_time = omp_get_wtime();
 
-    // Allocate destination resolution buffer once
+    // Allocate destination resolution buffer
     Resolution dstRes;
     dstRes.width = DST_WIDTH;
     dstRes.height = DST_HEIGHT;
-    size_t dstSize = DST_WIDTH * DST_HEIGHT * PIXEL_SIZE;
+    size_t dstSize = dstRes.width * dstRes.height * PIXEL_SIZE;
     dstRes.data = (unsigned char*)malloc(dstSize);
 
     if (dstRes.data == NULL) {
@@ -89,7 +98,6 @@ int main() {
 
     // Allocate memory for final output storage
     unsigned char* destMemory = (unsigned char*)malloc(dstSize);
-
     if (destMemory == NULL) {
         printf("Destination memory allocation failed\n");
         free(srcRes.data);
@@ -101,16 +109,11 @@ int main() {
     #pragma omp parallel for
     for (int i = 0; i < MAX_ITERATIONS; i++) {
         printf("Iteration %d\n", i + 1);
-
-        // Scale image
         scaleResolution(&srcRes, &dstRes);
-
-        // Write to memory
         writeResolution(&dstRes, destMemory);
     }
 
-
-    // Free allocated memory
+    // Free memory
     free(srcRes.data);
     free(dstRes.data);
     free(destMemory);
