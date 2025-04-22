@@ -1,4 +1,36 @@
 #!/bin/bash
 
-ffmpeg -i big-buck-bunny-1080p-60fps-30sec.mp4 -vf "scale=640:480,format=rgba" -f rawvideo -pix_fmt rgba big-buck-bunny_640x480.rgba
+# Input video
+INPUT="big-buck-bunny-1080p-60fps-30sec.mp4"
+
+# Resolutions array
+RESOLUTIONS=(
+  "640x480"
+  "800x600"
+  "1024x768"
+  "1152x864"
+  "1366x768"
+  "1280x800"
+  "1280x1024"
+  "1440x900"
+  "1600x1200"
+  "1920x1080"
+)
+
+# Output directory (optional)
+OUTPUT_DIR="rgba_outputs"
+mkdir -p "$OUTPUT_DIR"
+
+# Loop through each resolution
+for RES in "${RESOLUTIONS[@]}"; do
+  WIDTH=$(echo $RES | cut -d'x' -f1)
+  HEIGHT=$(echo $RES | cut -d'x' -f2)
+  OUTPUT_FILE="$OUTPUT_DIR/big-buck-bunny_${RES}.rgba"
+
+  echo "Converting to $RES (RGBA)..."
+
+  ffmpeg -y -i "$INPUT" -vf "scale=${WIDTH}:${HEIGHT},format=rgba" -f rawvideo -pix_fmt rgba "$OUTPUT_FILE"
+done
+
+echo "✅ All conversions complete. RGBA files are in ./$OUTPUT_DIR"
 
