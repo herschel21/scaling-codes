@@ -1,0 +1,36 @@
+#!/bin/bash
+
+INPUT="big-buck-bunny-1080p-60fps-30sec.mp4"
+BASENAME="big-buck-bunny"
+EXT="mp4"
+
+# List of resolutions
+RESOLUTIONS=(
+  "640x480"
+  "800x600"
+  "1024x768"
+  "1152x864"
+  "1366x768"
+  "1280x800"
+  "1280x1024"
+  "1440x900"
+  "1600x1200"
+  "1920x1080"
+)
+
+# Create output directory
+OUTPUT_DIR="converted_videos"
+mkdir -p "$OUTPUT_DIR"
+
+# Loop over each resolution and run ffmpeg
+for RES in "${RESOLUTIONS[@]}"; do
+  WIDTH=$(echo $RES | cut -d'x' -f1)
+  HEIGHT=$(echo $RES | cut -d'x' -f2)
+  OUTPUT_FILE="${OUTPUT_DIR}/${BASENAME}_${WIDTH}x${HEIGHT}.${EXT}"
+  
+  echo "Converting to $WIDTH x $HEIGHT ..."
+  ffmpeg -i "$INPUT" -vf "scale=${WIDTH}:${HEIGHT}" -c:a copy "$OUTPUT_FILE"
+done
+
+echo "All conversions complete. Files are in the '$OUTPUT_DIR' directory."
+
