@@ -15,8 +15,6 @@
 #define WINDOW_WIDTH  1920
 #define WINDOW_HEIGHT 1080
 #define FRAME_BUFFER_SIZE 8
-#define FRAME_WIDTH  640
-#define FRAME_HEIGHT 480
 
 typedef enum { DISPLAY_WAYLAND, DISPLAY_X11, DISPLAY_UNKNOWN } DisplayServerType;
 
@@ -24,8 +22,8 @@ DisplayServerType display_server_type = DISPLAY_UNKNOWN;
 
 // Video globals
 FILE* video_file = NULL;
-int frame_width = FRAME_WIDTH, frame_height = FRAME_HEIGHT;
-int rgb_buffer_size = FRAME_WIDTH * FRAME_HEIGHT * 4; // RGBA: 4 bytes per pixel
+int frame_width, frame_height; // Set from command-line arguments
+int rgb_buffer_size; // Computed dynamically
 uint8_t* rgb_buffer = NULL;
 
 // Display globals
@@ -238,7 +236,7 @@ GLuint init_shaders() {
 
 // Initialize geometry with scaling
 void init_geometry() {
-    printf("DEBUG: Initializing geometry with scaling\n");
+    printf("DEBUG: Initializing geometry with scaling for %dx%d\n", frame_width, frame_height);
     float video_aspect = (float)frame_width / frame_height;
     float window_aspect = (float)WINDOW_WIDTH / WINDOW_HEIGHT;
     float scaled_width, scaled_height;
@@ -265,7 +263,7 @@ void init_geometry() {
 
 // Initialize video texture
 void init_video_texture() {
-    printf("DEBUG: Initializing video texture\n");
+    printf("DEBUG: Initializing video texture for %dx%d\n", frame_width, frame_height);
     glGenTextures(1, &texture_id);
     glBindTexture(GL_TEXTURE_2D, texture_id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -514,10 +512,20 @@ void cleanup_gl() {
 // Main function
 int main(int argc, char *argv[]) {
     printf("DEBUG: Program started\n");
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <video_file.rgba>\n", argv[0]);
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s <video_file.rgba> <width> <height>\n", argv[0]);
         return EXIT_FAILURE;
     }
+
+    frame_width = atoi(argv[2]);
+    frame_height = atoi(argv[3]);
+    if (frame_width <= 0 || frame_height <= 0) {
+        fprintf(stderr, "DEBUG: Invalid resolution %dx%d\n", frame_width, frame_height);
+        return EXIT_FAILURE;
+    }
+
+    rgb_buffer_size = frame_width * frame_height * 4; // RGBA: 4 bytes per pixel
+    printf("DEBUG: Resolution set to %dx%d, buffer size: %d bytes\n", frame_width, frame_height, rgb_buffer_size);
 
     if (init_rgba_file(argv[1]) < 0) {
         fprintf(stderr, "DEBUG: Failed to open RGBA file\n");
